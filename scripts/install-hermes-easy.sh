@@ -28,7 +28,17 @@ else
   git clone --quiet --branch "$REF" "$REPO" "$DIR"
 fi
 
-uv tool install --python 3.14 --editable "$DIR" --force
+# `uv tool install` does not read [tool.uv] from the package it installs, so pass the
+# project's dependency overrides explicitly (they resolve pins upstream holds back).
+OVERRIDES="$(mktemp)"
+trap 'rm -f "$OVERRIDES"' EXIT
+uv run --quiet --no-project --python 3.14 -- python -c '
+import sys, tomllib
+with open(sys.argv[1], "rb") as fh:
+    print("\n".join(tomllib.load(fh).get("tool", {}).get("uv", {}).get("override-dependencies", [])))
+' "$DIR/pyproject.toml" > "$OVERRIDES"
+
+uv tool install --python 3.14 --editable "$DIR" --overrides "$OVERRIDES" --force
 
 echo
 echo "Installed. Start it with:  hermes-easy"

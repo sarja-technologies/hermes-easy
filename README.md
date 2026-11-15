@@ -27,17 +27,18 @@ Python 3.14 if you don't have it.
 curl -LsSf https://raw.githubusercontent.com/sarja-technologies/hermes-easy/main/scripts/install-hermes-easy.sh | sh
 ```
 
-The script clones this repository to `~/.local/share/hermes-easy` and installs it as a uv tool.
-To do the same by hand:
+The script clones this repository to `~/.local/share/hermes-easy` and installs it as a uv tool,
+passing the dependency overrides from `pyproject.toml` (`uv tool install` does not read them
+itself). To inspect the script before running it:
 
 ```sh
 git clone https://github.com/sarja-technologies/hermes-easy ~/.local/share/hermes-easy
-uv tool install --python 3.14 --editable ~/.local/share/hermes-easy
+sh ~/.local/share/hermes-easy/scripts/install-hermes-easy.sh
 ```
 
 The install is editable because Hermes loads its skills, locales and plugin manifests from the
-source checkout at runtime. Run the same commands again to update; `hermes-easy update` prints
-them instead of running upstream's in-place updater.
+source checkout at runtime. Run the installer again to update; `hermes-easy update` prints that
+command instead of running upstream's in-place updater.
 
 ## Run
 
