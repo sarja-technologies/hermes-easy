@@ -1,243 +1,174 @@
-<p align="center">
-  <img src="assets/banner.png" alt="Hermes Agent" width="100%">
-</p>
+# hermes-easy
 
-# Hermes Agent ☤
-<p align="center">
-  <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>
-</p>
-<p align="center">
-  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
-  <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
-  <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
-  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
-  <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Lang-اردو-green?style=for-the-badge" alt="اردو"></a>
-  <a href="README.es.md"><img src="https://img.shields.io/badge/Lang-Español-orange?style=for-the-badge" alt="Español"></a>
-</p>
+A fork of [Hermes Agent](https://github.com/NousResearch/hermes-agent) with a quieter terminal
+interface and a `/ui-settings` command for changing it. The agent underneath is upstream's:
+tools, skills, memory, MCP, providers, sessions, cron and the messaging gateway all work as they
+do in Hermes.
 
-**The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
+![A hermes-easy turn: reading a file, patching it, running a check, then the answer](assets/hermes-easy/turn.png)
 
-Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenRouter, OpenAI, your own endpoint, and [many others](https://hermes-agent.nousresearch.com/docs/integrations/providers). Switch with `hermes model` — no code changes, no lock-in.
+## Credit
 
-<table>
-<tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
-<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
-<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
-<tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
-<tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. In Desktop, choose their provider, model, and limits under Settings → Model → Subagents, then Apply the complete route. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
-<tr><td><b>Runs anywhere, not just your laptop</b></td><td>Six built-in terminal backends — local, Docker, SSH, Modal, Daytona, and Vercel Sandbox — plus plugin backends such as Singularity/Apptainer. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions. Run it on a $5 VPS or a GPU cluster.</td></tr>
-<tr><td><b>Research-ready</b></td><td>Batch trajectory generation, trajectory compression for training the next generation of tool-calling models.</td></tr>
-</table>
+hermes-easy is built on **Hermes Agent by [Nous Research](https://nousresearch.com)**
+(<https://github.com/NousResearch/hermes-agent>), released under the MIT License. The
+[LICENSE](LICENSE) file and its copyright notice are kept unchanged. Upstream's own README is
+in [README.upstream.md](README.upstream.md), and its full documentation is at
+<https://hermes-agent.nousresearch.com/docs/>.
 
----
+This fork starts from upstream commit `fd8a6c41ac`. It is not affiliated with or endorsed by
+Nous Research; bugs in the interface layer belong here, not upstream.
 
-## Quick Install
+## Install
 
-### Linux, macOS, WSL2
+You need `git` and [uv](https://docs.astral.sh/uv/getting-started/installation/). uv fetches
+Python 3.14 if you don't have it.
 
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+```sh
+curl -LsSf https://raw.githubusercontent.com/sarja-technologies/hermes-easy/main/scripts/install-hermes-easy.sh | sh
 ```
 
-### Windows (native, PowerShell)
+The script clones this repository to `~/.local/share/hermes-easy` and installs it as a uv tool.
+To do the same by hand:
 
-> **Heads up:** Native Windows runs Hermes without WSL — CLI, gateway, TUI, and tools all work natively. If you'd rather use WSL2, the Linux/macOS one-liner above works there too. Found a bug? Please [file issues](https://github.com/NousResearch/hermes-agent/issues).
-
-Run this in PowerShell:
-
-```powershell
-iex (irm https://hermes-agent.nousresearch.com/install.ps1)
+```sh
+git clone https://github.com/sarja-technologies/hermes-easy ~/.local/share/hermes-easy
+uv tool install --python 3.14 --editable ~/.local/share/hermes-easy
 ```
 
-The source installer delegates Python 3.14, Node.js, npm, pnpm, ripgrep, FFmpeg,
-and Python dependencies to PM. If Git is absent, it stages the verified Git
-for Windows archive in Hermes' tool store. It does not replace your system Git.
-See [installation methods](https://hermes-agent.nousresearch.com/docs/getting-started/installation)
-for the separate MSIX/App Installer package and its update ownership.
+The install is editable because Hermes loads its skills, locales and plugin manifests from the
+source checkout at runtime. Run the same commands again to update; `hermes-easy update` prints
+them instead of running upstream's in-place updater.
 
-> **Android / Termux:** A signed APT repository is available for aarch64 devices, with a `stable` channel (tagged releases) and a prerelease `canary` channel. The package includes Python, Node.js, and the TUI. Use the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux), not the desktop/server installer script.
->
-> **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.
+## Run
 
-After installation:
-
-```bash
-source ~/.bashrc    # reload shell (or: source ~/.zshrc)
-hermes              # start chatting!
+```sh
+hermes-easy
 ```
 
-### Troubleshooting
+On first launch, pick a model provider with `hermes-easy model` (or the full wizard,
+`hermes-easy setup`). If you already use Hermes, copy your model and provider settings across:
 
-#### Windows Defender or antivirus flags `uv.exe` as malware
-
-If your antivirus (Bitdefender, Windows Defender, etc.) quarantines `uv.exe` from the Hermes `bin` folder (`%LOCALAPPDATA%\hermes\bin\uv.exe`), this is a **false positive**. The file is Astral's `uv` — the Rust Python package manager Hermes bundles to manage its Python environment. ML-based antivirus engines commonly flag unsigned Rust binaries that download and install packages.
-
-**To verify your copy is authentic:**
-
-```powershell
-# Install GitHub CLI if needed
-winget install --id GitHub.cli
-
-# Login to GitHub
-gh auth login
-
-# Run verification
-$uv = "$env:LOCALAPPDATA\hermes\bin\uv.exe"
-$ver = (& $uv --version).Split(' ')[1]
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$zip = "$env:TEMP\uv.zip"
-Invoke-WebRequest "https://github.com/astral-sh/uv/releases/download/$ver/uv-x86_64-pc-windows-msvc.zip" -OutFile $zip -UseBasicParsing
-gh attestation verify $zip --repo astral-sh/uv
-Expand-Archive $zip "$env:TEMP\uv_x" -Force
-(Get-FileHash "$env:TEMP\uv_x\uv.exe").Hash -eq (Get-FileHash $uv).Hash
+```sh
+hermes-easy import-upstream          # from ~/.hermes; asks before copying
 ```
 
-If attestation says "Verification succeeded" and the last line prints `True`, you're good.
+It copies the `model`, `providers`, `custom_providers`, `fallback_model` and `model_aliases`
+sections of `config.yaml` and the provider API keys from `.env`. Messaging tokens, gateway
+settings, memory and sessions are not copied, and `~/.hermes` is only read.
 
-**To whitelist Hermes:**
-- **Windows Defender:** Run PowerShell as Admin → `Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\hermes\bin"`
-- **Bitdefender:** Add an exception in the Bitdefender console (Protection > Antivirus > Settings > Manage Exceptions)
-- Whitelist the **folder**, not the file hash — Hermes updates `uv` and the hash changes every version
+Every upstream subcommand and flag works under the new name: `hermes-easy -c` resumes the last
+session, `hermes-easy gateway`, `hermes-easy cron`, `hermes-easy skills` and so on. Editors that
+speak ACP can launch `hermes-easy-acp`.
 
-For more context, see the upstream Astral reports: [astral-sh/uv#13553](https://github.com/astral-sh/uv/issues/13553), [astral-sh/uv#15011](https://github.com/astral-sh/uv/issues/15011), [astral-sh/uv#10079](https://github.com/astral-sh/uv/issues/10079).
+## Next to an existing Hermes install
 
----
+- hermes-easy keeps its state in `~/.hermes-easy`. Set `HERMES_HOME` to move it; it refuses to
+  run on `~/.hermes`.
+- It installs only `hermes-easy` and `hermes-easy-acp`. Your `hermes` command is untouched.
+- Inside a hermes-easy session, a `hermes` the agent runs (kanban workers, profile wrappers,
+  its own terminal) resolves to hermes-easy through `~/.hermes-easy/bin/hermes`.
+- The shared-metrics question upstream asks on first run starts answered "no".
+  `hermes-easy setup telemetry` changes it.
 
-## Getting Started
+## What changed in the interface
 
-```bash
-hermes              # Interactive CLI — start a conversation
-hermes model        # Choose your LLM provider and model
-hermes tools        # Configure which tools are enabled
-hermes config set   # Set individual config values
-hermes config get   # Print individual config values
-hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
-hermes setup        # Run the full setup wizard (configures everything at once)
-hermes update       # Update to the latest version
-hermes doctor       # Diagnose any issues
+- One line at launch (name, version, model, directory) instead of the banner and inventory.
+  `/tools` and `/skills` still list everything.
+- Your messages start with `›`. Reasoning streams dim and ends with "Thought for Ns".
+- One row per tool call, with a mark for success or failure, its duration and the error when
+  there is one. Edits still show their diff. Paths inside the working directory are shown
+  relative to it.
+- A one-line summary after each turn: time, files edited, files read, commands run.
+- Fenced code in answers is indented without the fence markers, and keeps characters such as
+  `*` that the plain-text renderer used to strip.
+- The input has a single rule above it and a status line below it with the model, context use,
+  directory and the main keys.
+- The spinner has no faces or rotating verbs. `/help` is one aligned row per command.
+- `/clear` redraws the launch line instead of the banner.
+
+## UI settings
+
+`/ui-settings` opens a panel under the input. Changes apply as you make them, show in a preview
+inside the panel, and are saved to `~/.hermes-easy/ui.yaml` straight away.
+
+![The /ui-settings panel with the Forest preset selected](assets/hermes-easy/ui-settings.png)
+
+| Key | Action |
+| --- | --- |
+| `↑` `↓` | Move between settings |
+| `←` `→` | Change the value |
+| `Enter` | Next value; on a colour row, type `#RRGGBB`; on Reset, press twice |
+| `d` | Put the selected setting back to its default |
+| `Esc` | Close the panel |
+
+The same settings work without the panel:
+
+```text
+/ui-settings show                         list every setting and its value
+/ui-settings set layout.spacing compact   change one
+/ui-settings preset nordic                switch preset
+/ui-settings reset                        back to defaults
+/ui-settings path                         where ui.yaml is
 ```
 
-📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
+| Setting | Values | Default |
+| --- | --- | --- |
+| `theme.preset` | `graphite`, `monochrome`, `nordic`, `forest`, `amber`, `classic` | `graphite` |
+| `theme.mode` | `auto`, `dark`, `light` | `auto` |
+| `theme.accent` | `#RRGGBB`, or empty for the preset's | empty |
+| `theme.foreground` | `#RRGGBB` for answer text, or empty for the terminal's | empty |
+| `theme.background` | `#RRGGBB` set on terminals that accept OSC 11, or empty | empty |
+| `layout.spacing` | `comfortable`, `compact` | `comfortable` |
+| `layout.messages` | `glyph` (`›`), `labeled` (You / Hermes), `ruled` | `glyph` |
+| `layout.tool_output` | `compact` (one row), `preview` (first lines), `full`, `hidden` | `compact` |
+| `status.line` | `standard`, `minimal`, `full`, `off` | `standard` |
+| `status.key_hints` | `true`, `false` | `true` |
+| `status.turn_summary` | `true`, `false` | `true` |
+| `motion.spinner` | `dots`, `line`, `pulse`, `static` | `dots` |
+| `motion.reduced_motion` | `true`, `false` | `false` |
 
----
+`ui.yaml` can be edited by hand. An unknown key is ignored and an invalid value falls back to
+its default with a one-line warning at launch; a broken file never stops hermes-easy starting.
+Custom colours need a truecolor terminal (`COLORTERM=truecolor`); elsewhere the presets are
+mapped to the 256-colour palette.
 
-## Skip the API-key collection — Nous Portal
+![Labeled messages and tool output previews with the Forest preset](assets/hermes-easy/labeled-preview.png)
 
-Hermes works with whatever provider you want — that's not changing. But if you'd rather not collect five separate API keys for the model, web search, image generation, TTS, and a cloud browser, **[Nous Portal](https://portal.nousresearch.com)** covers all of them under one subscription:
+## Keys
 
-- **300+ models** — pick any of them with `/model <name>`
-- **Tool Gateway** — web search, image generation (FAL), text-to-speech (OpenAI), cloud browser (Browser Use), all routed through your sub. No extra accounts.
+| Key | Action |
+| --- | --- |
+| `Enter` | Send |
+| `Ctrl+J`, `Alt+Enter` | New line |
+| `Tab` | Complete a command or path |
+| `Ctrl+C` | Interrupt the agent; on an empty prompt, exit |
+| `Ctrl+O` | Show the full output of the last tool call |
+| `Ctrl+P` | Command palette |
+| `Ctrl+G` | Edit the draft in `$EDITOR` |
+| `@` | Attach a file |
+| `!` | Run a shell command |
 
-One command from a fresh install:
+## Not changed
 
-```bash
-hermes setup --portal
+- `hermes-easy --tui` (upstream's Ink interface), the web dashboard and the desktop app look as
+  they do upstream.
+- Approval and confirmation prompts, the model picker and other modal dialogs keep upstream's
+  boxed style.
+- Some system messages still carry upstream's emoji.
+
+## Development
+
+```sh
+git clone https://github.com/sarja-technologies/hermes-easy && cd hermes-easy
+uv venv --python 3.14 .venv && uv pip install --python .venv/bin/python -e ".[dev]"
+.venv/bin/python -m pytest tests/hermes_easy
 ```
 
-That logs you in via OAuth, sets Nous as your provider, and turns on the Tool Gateway. Check what's wired up any time with `hermes portal info`. Full details on the [Tool Gateway docs page](https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-gateway).
-
-You can still bring your own keys per-tool whenever you want — the gateway is per-backend, not all-or-nothing.
-
----
-
-## CLI vs Messaging Quick Reference
-
-Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
-
-| Action                         | CLI                                           | Messaging platforms                                                              |
-| ------------------------------ | --------------------------------------------- | -------------------------------------------------------------------------------- |
-| Start chatting                 | `hermes`                                      | Run `hermes gateway setup` + `hermes gateway start`, then send the bot a message |
-| Start fresh conversation       | `/new` or `/reset`                            | `/new` or `/reset`                                                               |
-| Change model                   | `/model [provider:model]`                     | `/model [provider:model]`                                                        |
-| Set a personality              | `/personality [name]`                         | `/personality [name]`                                                            |
-| Retry or undo the last turn    | `/retry`, `/undo`                             | `/retry`, `/undo`                                                                |
-| Compress context / check usage | `/compress`, `/usage`, `/insights [--days N]` | `/compress`, `/usage`, `/insights [days]`                                        |
-| Browse skills                  | `/skills` or `/<skill-name>`                  | `/<skill-name>`                                                                  |
-| Interrupt current work         | `Ctrl+C` or send a new message                | `/stop` or send a new message                                                    |
-| Platform-specific status       | `/platforms`                                  | `/status`, `/sethome`                                                            |
-
-For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
-
----
-
-## Documentation
-
-All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes-agent.nousresearch.com/docs/)**:
-
-| Section                                                                                             | What's Covered                                             |
-| --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| [Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart)                 | Install → setup → first conversation in 2 minutes          |
-| [CLI Usage](https://hermes-agent.nousresearch.com/docs/user-guide/cli)                              | Commands, keybindings, personalities, sessions             |
-| [Configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration)                | Config file, providers, models, all options                |
-| [Messaging Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging)                | Telegram, Discord, Slack, WhatsApp, Signal, Home Assistant |
-| [Security](https://hermes-agent.nousresearch.com/docs/user-guide/security)                          | Command approval, DM pairing, container isolation          |
-| [Tools & Toolsets](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools)            | 40+ tools, toolset system, terminal backends               |
-| [Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)              | Procedural memory, Skills Hub, creating skills             |
-| [Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory)                     | Persistent memory, user profiles, best practices           |
-| [MCP Integration](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp)               | Connect any MCP server for extended capabilities           |
-| [Cron Scheduling](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron)              | Scheduled tasks with platform delivery                     |
-| [Context Files](https://hermes-agent.nousresearch.com/docs/user-guide/features/context-files)       | Project context that shapes every conversation             |
-| [Architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture)             | Project structure, agent loop, key classes                 |
-| [Contributing](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing)             | Development setup, PR process, code style                  |
-| [CLI Reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands)                  | All commands and flags                                     |
-| [Environment Variables](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) | Complete env var reference                                 |
-
----
-
-## Migrating from OpenClaw or another agent
-
-If you're coming from OpenClaw, Claude Code, Codex CLI or Cursor, Hermes can import your settings, memories and skills (and, for OpenClaw, API keys when you ask for them).
-
-**During setup:** `hermes setup` asks whether to import from another agent, pre-selects the ones it finds (`~/.openclaw`, `~/.claude`, `~/.codex`, `~/.cursor`), installs the official `agent-importers` plugin and runs the import with a preview first.
-
-**Anytime after install:**
-
-```bash
-hermes plugins install agent-importers          # once per profile
-hermes import-agent openclaw                    # interactive migration (full preset)
-hermes import-agent openclaw --dry-run          # preview what would be migrated
-hermes import-agent openclaw --migrate-secrets  # also bring allowlisted API keys
-hermes import-agent claude-code                 # or codex / cursor
-```
-
-What gets imported from OpenClaw:
-
-- **SOUL.md** — persona file
-- **Memories** — MEMORY.md and USER.md entries
-- **Skills** — user-created skills → `~/.hermes/skills/openclaw-imports/`
-- **Command allowlist** — approval patterns
-- **Messaging settings** — platform configs, allowed users, working directory
-- **API keys** — allowlisted secrets (Telegram, OpenRouter, OpenAI, Anthropic, ElevenLabs), only with `--migrate-secrets`
-- **TTS assets** — workspace audio files
-- **Workspace instructions** — AGENTS.md (with `--workspace-target`)
-
-`hermes claw migrate` still works as the older spelling. See the [OpenClaw migration guide](https://hermes-agent.nousresearch.com/docs/guides/migrate-from-openclaw) and [Import from Other Agents](https://hermes-agent.nousresearch.com/docs/user-guide/import-from-other-agents).
-
----
-
-## Contributing
-
-We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.
-
-Start with the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow)
-for activation, daily use, dependency changes, and leaving the environment.
-[Development Setup](CONTRIBUTING.md#development-setup) covers the separate test environment and verification commands.
-
----
-
-## Community
-
-- 💬 [Discord](https://discord.gg/NousResearch)
-- 📚 [Skills Hub](https://agentskills.io)
-- 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
-- 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux desktop-control MCP server for Hermes and other MCP hosts, with AT-SPI accessibility trees, Wayland/X11 input, screenshots, and compositor window targeting.
-- 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
-
----
+The interface layer is in `hermes_easy/`; upstream files touched are listed in the commit that
+introduces it. The screenshots above are captures of hermes-easy running in tmux (100 columns,
+truecolor, a local `qwen3.6-35b-a3b` model behind an OpenAI-compatible endpoint), rendered to
+PNG with `scripts/easy_screenshot.py`.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
-
-Built by [Nous Research](https://nousresearch.com).
+MIT, as upstream. See [LICENSE](LICENSE): Copyright (c) 2025 Nous Research.
