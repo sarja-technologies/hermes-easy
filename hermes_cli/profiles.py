@@ -566,7 +566,7 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
         if sys.platform == "win32":
             wrapper_path.write_text(f"@echo off\r\nhermes -p {profile} %*\r\n", encoding="utf-8")
         else:
-            hermes_exe = shutil.which("hermes") or "hermes"
+            hermes_exe = os.environ.get("HERMES_BIN", "").strip() or shutil.which("hermes") or "hermes"
             wrapper_path.write_text(f'#!/bin/sh\nexec {shlex.quote(hermes_exe)} -p {profile} "$@"\n', encoding="utf-8")
             wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         return wrapper_path

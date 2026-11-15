@@ -118,6 +118,7 @@
   "/topic": null,
   "/topup": null,
   "/ts": null,
+  "/ui-settings": "terminal",
   "/undo": null,
   "/update": "terminal",
   "/upgrade": null,

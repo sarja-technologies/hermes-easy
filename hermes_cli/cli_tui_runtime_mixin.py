@@ -146,7 +146,9 @@ class CLITuiRuntimeMixin:
 
         if isinstance(user_input, str) and _PASTE_REF_RE.search(user_input):
             user_input = self._expand_paste_references(user_input)
-        _cprint("")
+        import hermes_easy
+        if not hermes_easy.active():  # hermes-easy's user row brings its own gap
+            _cprint("")
         self._print_user_message_preview(notification_preview or user_input)
 
         if submit_images:
@@ -168,7 +170,13 @@ class CLITuiRuntimeMixin:
     def _tui_run_slash_input(self, user_input: str):
         """Dispatch a slash command. Returns the pending agent seed to run as a chat turn, else None."""
         from cli import _cprint
-        _cprint(f"\n⚙️  {user_input}")
+        import hermes_easy
+        if hermes_easy.active():
+            from hermes_easy.layout import user_lines
+            for line in user_lines(self, user_input):
+                _cprint(line)
+        else:
+            _cprint(f"\n⚙️  {user_input}")
         try:
             if not self.process_command(user_input):
                 self._should_exit = True
@@ -342,7 +350,8 @@ class CLITuiRuntimeMixin:
             _welcome_color = _welcome_skin.get_color("banner_text", _welcome_color)
         except Exception:
             pass
-        self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
+        if _welcome_text:  # hermes-easy's skin has no welcome line
+            self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
 
         self._tui_startup_prewarm_and_warnings(_welcome_skin)
         if _show_vscode_images_hint:
@@ -359,7 +368,9 @@ class CLITuiRuntimeMixin:
             self._console_print(
                 f"[bold {_accent_hex()}]{t('cli.tui.activated_skills_label')}[/] {', '.join(_skills_for_line)}")
             self._startup_skills_line_shown = True
-        self._console_print()
+        import hermes_easy
+        if not hermes_easy.active():  # hermes-easy spaces its own blocks
+            self._console_print()
 
     def _tui_startup_prewarm_and_warnings(self, _welcome_skin):
         """Idle-window prewarms (picker cache, agent runtime imports) plus the redaction-off and OpenClaw-residue banners."""

@@ -15,6 +15,7 @@ import time
 from datetime import datetime
 
 from agent.i18n import t
+import hermes_easy
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,8 @@ def is_modern(cli) -> bool:
 
 def layout_from_config(display: dict) -> bool:
     """True for the glyph layout (default); ``classic`` keeps the boxed transcript."""
+    if hermes_easy.active():
+        return True
     return str((display or {}).get("cli_layout", "modern") or "modern").strip().lower() != "classic"
 
 
@@ -86,6 +89,8 @@ def separator(accent: bool) -> str:
 
 def closing_separator(accent: bool) -> str:
     """The bar that closes a block; the blank line after it is owed to whatever prints next."""
+    if hermes_easy.active():
+        return None
     global _GAP_PENDING
     bar = separator(accent)
     _GAP_PENDING = True
@@ -98,6 +103,14 @@ def _take_gap() -> str:
     return gap
 
 
+def open_block(accent: bool) -> str | None:
+    """The row that opens a block (a blank line, then the bar); hermes-easy owns its own gaps."""
+    if hermes_easy.active():
+        from hermes_easy import layout as easy
+        return easy.reasoning_open()
+    return "\n" + separator(accent)
+
+
 def user_echo_markup(text: str, accent_hex: str, ts_suffix: str = "") -> str:
     """Rich markup for a submitted single-line user message: ``❯ text``."""
     from rich.markup import escape
@@ -106,6 +119,9 @@ def user_echo_markup(text: str, accent_hex: str, ts_suffix: str = "") -> str:
 
 def answer_label(timestamp: str = "") -> str:
     """The rows that open an answer: the accent bar, then the skin's brand glyph + name."""
+    if hermes_easy.active():
+        from hermes_easy import layout as easy
+        return easy.answer_open(timestamp)
     glyph, name = _brand_glyph()
     stamp = f" {_DIM}{timestamp}{_RST}" if timestamp else ""
     return f"\n{separator(True)}\n{_fg(_skin_hex('ui_accent', '#FFBF00'), bold=True)}{glyph} {name}{_RST}{stamp}"
@@ -114,6 +130,9 @@ def answer_label(timestamp: str = "") -> str:
 def thought_line(seconds: float | None) -> str:
     """``∴ Thought for 3s`` (dim italic), closing a reasoning block. No title: the reasoning is
     printed right above, so any excerpt of it would repeat what the user just read."""
+    if hermes_easy.active():
+        from hermes_easy import layout as easy
+        return easy.thought_line(seconds)
     took = t("cli.modern.thought_for", seconds=f"{max(seconds or 0.0, 0.0):.0f}") if seconds else t("cli.modern.thought")
     return f"\x1b[2;3m∴ {took}{_RST}"
 
@@ -123,12 +142,18 @@ _REASONING_PREVIEW_LINES = 10  # classic's post-hoc reasoning box shows this man
 
 def reasoning_text_line(line: str) -> str:
     """One streamed reasoning line: dim, no frame (the dim bar above opens the block)."""
+    if hermes_easy.active():
+        from hermes_easy import layout as easy
+        return easy.reasoning_line(line)
     return f"{_DIM}{line}{_RST}"
 
 
 def thought_rows(seconds: float | None, text: str, full: bool) -> list[str]:
     """A reasoning block printed after the fact (no live stream): dim bar, its text (first 10
     lines unless ``full``, as classic), then the ``∴ Thought for 3s`` summary."""
+    if hermes_easy.active():
+        from hermes_easy import layout as easy
+        return easy.thought_rows(seconds, text, full)
     lines = (text or "").strip().splitlines()
     shown = lines if full or len(lines) <= _REASONING_PREVIEW_LINES else lines[:_REASONING_PREVIEW_LINES]
     rows = ["", separator(False), *(reasoning_text_line(line) for line in shown)]
@@ -140,6 +165,9 @@ def thought_rows(seconds: float | None, text: str, full: bool) -> list[str]:
 def completed_tool_line(cli, function_name: str, args: dict | None, duration: float, result=None,
                         is_error: bool = False) -> str:
     """The scrollback line for a finished tool call in the active layout."""
+    if hermes_easy.active():
+        from hermes_easy import layout as easy
+        return easy.tool_row(cli, function_name, args, duration, result, is_error)
     if is_modern(cli):
         return _take_gap() + tool_row(function_name, args, duration, result, is_error)
     from agent.display import get_cute_tool_message
@@ -213,6 +241,9 @@ def diff_printer(print_fn):
 
 def turn_footer(summary: str) -> str:
     """``─ 12.4s · read 3 files · edited 1 file +4 -0 · 7:02 AM`` closing each turn."""
+    if hermes_easy.active():
+        from hermes_easy import layout as easy
+        return easy.turn_footer(summary)
     body = summary.lstrip("⋯ ").strip()
     clock = datetime.now().strftime("%-I:%M %p") if os.name != "nt" else datetime.now().strftime("%I:%M %p")
     return _take_gap() + (f"{_DIM}─ {body} · {clock}{_RST}" if body else f"{_DIM}─ {clock}{_RST}")
@@ -265,6 +296,9 @@ def _fit(cli, frags: list, width: int) -> list:
 
 def top_rule_fragments(cli) -> list:
     """``── ⠹ Running tests · 14s ─────────── calc helpers ─``: live status left, session title right."""
+    if hermes_easy.active():
+        from hermes_easy import layout as easy
+        return easy.top_rule_fragments(cli)
     width = max(10, cli._get_tui_terminal_width())
     rule, accent = rule_style(), f"fg:{_skin_hex('ui_accent', '#FFBF00')} bold"
     busy = getattr(cli, "_agent_running", False) or getattr(cli, "_command_running", False)
@@ -289,7 +323,7 @@ def hint_pairs(cli) -> list[tuple[str, str]]:
     """Keys that do something right now, for the footer's right half."""
     if any(getattr(cli, attr, None) for attr in (
             "_approval_state", "_clarify_state", "_sudo_state", "_secret_state", "_connection_state",
-            "_slash_confirm_state", "_model_picker_state", "_command_palette_state")):
+            "_slash_confirm_state", "_model_picker_state", "_command_palette_state", "_ui_settings_state")):
         return []
     if getattr(cli, "_agent_running", False):
         enter = {"steer": "steer", "queue": "queue"}.get(getattr(cli, "busy_input_mode", ""), "interrupt")
@@ -303,6 +337,9 @@ def hint_pairs(cli) -> list[tuple[str, str]]:
 def status_line_fragments(cli) -> list:
     """Footer under the composer: model · context gauge · cwd (branch) left, live key hints right.
     An explicit ``display.status_bar.fields`` list keeps the user's chosen segments on the left."""
+    if hermes_easy.active():
+        from hermes_easy import layout as easy
+        return _render_safely(easy.status_line_fragments, cli)
     return _render_safely(_status_line_fragments, cli)
 
 
@@ -367,7 +404,8 @@ def modern_input_rules(cli, kb):
 
     top = Window(FormattedTextControl(lambda: _render_safely(top_rule_fragments, cli)),
                  height=lambda: cli._tui_input_rule_height("top"), wrap_lines=False)
-    bottom = Window(char="─", height=lambda: cli._tui_input_rule_height("bottom"), style=rule_style)
+    bottom = Window(char="─", height=lambda: 0 if hermes_easy.active() else cli._tui_input_rule_height("bottom"),
+                    style=rule_style)
 
     def _can_queue() -> bool:
         from prompt_toolkit.application import get_app

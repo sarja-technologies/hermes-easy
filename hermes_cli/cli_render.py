@@ -754,6 +754,8 @@ def _cprint(text: str, *, raw: str = ""):
     transmit): never parsed as ANSI, counted as zero cells, and kept out of the output
     history, so a resize replay repaints *text* alone and never crops or re-sends it.
     """
+    if text is None:  # a layout row that renders as nothing (hermes-easy's gap-less blocks)
+        return
     from cli import _output_history_recording, _pt_print, _pt_print_ansi, _record_output_history
     recording = _output_history_recording()
     seq = next(_PAINT_SEQ)

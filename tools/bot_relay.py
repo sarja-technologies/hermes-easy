@@ -495,6 +495,8 @@ def _hermes_cli() -> str:
     published = Path(project_root_str()) / ".hermes" / "bin" / name
     if published.is_file():
         return str(published)
+    if os.environ.get("HERMES_BIN", "").strip():  # hermes-easy's shim for its own install
+        return os.environ["HERMES_BIN"].strip()
     sibling = Path(sys.executable or "").parent / name
     return str(sibling) if sibling.is_file() else shutil.which("hermes") or "hermes"
 

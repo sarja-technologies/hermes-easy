@@ -339,3 +339,4 @@ infografico/
 /pm/.lock.json.lock
 
 apps/desktop/.dist-build*
+hermes_easy.egg-info/

@@ -699,6 +699,12 @@ def _resolve_hermes_bin_dir() -> str | None:
     global _HERMES_BIN_DIR, _HERMES_BIN_DIR_IS_PAYLOAD
     if _HERMES_BIN_DIR is not _SENTINEL:
         return _HERMES_BIN_DIR  # type: ignore[return-value]
+    # hermes-easy publishes a `hermes` shim for its own install; it must win over an upstream
+    # `hermes` on PATH, so it is placed first like a sealed payload's launcher dir.
+    easy_dir = os.environ.get("HERMES_EASY_BIN_DIR", "").strip()
+    if easy_dir and os.path.isdir(easy_dir):
+        _HERMES_BIN_DIR, _HERMES_BIN_DIR_IS_PAYLOAD = easy_dir, True
+        return _HERMES_BIN_DIR
     from pm.environments import payload_command_dir
 
     # A payload's venv also holds a `hermes`, but on Windows its redirector names the

@@ -301,7 +301,8 @@ def modal_prompt_active(cli):
     every composer shortcut stays off while one is open."""
     return any(getattr(cli, name, None) for name in (
         '_clarify_state', '_approval_state', '_slash_confirm_state', '_sudo_state',
-        '_secret_state', '_connection_state', '_model_picker_state', '_command_palette_state'))
+        '_secret_state', '_connection_state', '_model_picker_state', '_command_palette_state',
+        '_ui_settings_state'))
 
 
 def build_monitor_application(monitor, **kwargs):

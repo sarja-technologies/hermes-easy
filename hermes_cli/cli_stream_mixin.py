@@ -237,6 +237,12 @@ class CLIStreamMixin:
             render_notification(lambda: ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]"),
                                 platform="cli", diagnostic=user_input.notification_category == "diagnostic")
             return
+        import hermes_easy
+        if hermes_easy.active():
+            from hermes_easy.layout import user_lines
+            for line in user_lines(self, str(user_input or "")):
+                _cprint(line)
+            return
         modern = getattr(self, "_modern_layout", False)
         if modern:
             from hermes_cli.cli_modern_layout import separator
@@ -270,19 +276,25 @@ class CLIStreamMixin:
         if getattr(self, "_stream_box_opened", False):
             return
         if getattr(self, "_modern_layout", False):
-            from hermes_cli.cli_modern_layout import reasoning_text_line, separator
+            from hermes_cli.cli_modern_layout import open_block, reasoning_text_line
             if not getattr(self, "_reasoning_box_opened", False):
                 self._reasoning_box_opened, self._reasoning_started_at = True, time.monotonic()
                 self._reasoning_buf = ""
-                _cprint("\n" + separator(False))
+                _cprint(open_block(False))
             self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
             # Live, as classic: complete lines now, long partial lines force-flushed.
             while "\n" in self._reasoning_buf:
                 line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
                 _cprint(reasoning_text_line(line))
             if len(self._reasoning_buf) > 80:
-                _cprint(reasoning_text_line(self._reasoning_buf))
-                self._reasoning_buf = ""
+                import hermes_easy
+                cut = self._reasoning_buf.rfind(" ", 40) if hermes_easy.active() else -1
+                if cut > 0:  # break at a word, never inside one
+                    _cprint(reasoning_text_line(self._reasoning_buf[:cut]))
+                    self._reasoning_buf = self._reasoning_buf[cut + 1:]
+                else:
+                    _cprint(reasoning_text_line(self._reasoning_buf))
+                    self._reasoning_buf = ""
             return
         if not getattr(self, "_reasoning_box_opened", False):
             self._reasoning_box_opened = True
@@ -491,6 +503,10 @@ class CLIStreamMixin:
                 self._stream_text_ansi = ""
             if self.show_timestamps:
                 label = f"{label} {datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}"
+            import hermes_easy
+            if hermes_easy.active():
+                from hermes_easy.layout import answer_text_ansi
+                self._stream_text_ansi = answer_text_ansi()
             if getattr(self, "_modern_layout", False):
                 from hermes_cli.cli_modern_layout import answer_label
                 _cprint(answer_label(datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))
@@ -513,10 +529,18 @@ class CLIStreamMixin:
                     self._stream_table_buf.append(line)
                     continue
                 self._flush_stream_table_buf()
-            elif looks_like_table_row(line):
+            elif looks_like_table_row(line) and not getattr(self, "_easy_in_fence", False):
                 self._stream_table_buf.append(line)
                 self._in_stream_table = True
                 continue
+            import hermes_easy
+            if hermes_easy.active():
+                from hermes_easy.layout import stream_code_line
+                code = stream_code_line(self, line)
+                if code is not None:
+                    if code:
+                        self._emit_stream_line(code)
+                    continue
             if self.final_response_markdown == "strip":
                 line = _strip_markdown_syntax(line)
             self._emit_stream_line(line)
@@ -561,9 +585,18 @@ class CLIStreamMixin:
         if getattr(self, "_stream_table_buf", None):
             self._flush_stream_table_buf()
         if self._stream_buf:
-            line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
-            self._emit_stream_line(line)
+            import hermes_easy
+            code = None
+            if hermes_easy.active():
+                from hermes_easy.layout import stream_code_line
+                code = stream_code_line(self, self._stream_buf)
+            if code is None:
+                line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
+                self._emit_stream_line(line)
+            elif code:
+                self._emit_stream_line(code)
             self._stream_buf = ""
+        self._easy_in_fence = False
         if self._stream_box_opened and getattr(self, "_stream_box_live", False):
             if getattr(self, "_modern_layout", False):
                 from hermes_cli.cli_modern_layout import closing_separator
