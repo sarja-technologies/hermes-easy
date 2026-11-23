@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +19,7 @@ from agent.message_metadata import append_message
 from agent.message_sanitization import (close_interrupted_tool_sequence, coalesce_tool_call_id,
                                           normalize_provider_tool_call_ids)
 from agent.turn_failure_copy import stamp_failure
+from hermes_constants import FINISH_REASON_LENGTH
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -222,10 +224,11 @@ def validate_tool_calls(
             # (see turn_tool_call_recovery) instead of ending the turn.
             from agent.turn_tool_call_recovery import MAX_ATTEMPTS, plan_recovery
 
-            plan = plan_recovery(agent, None, None, stream_drop=False)
+            plan = plan_recovery(agent, None, None, reported=finish_reason == FINISH_REASON_LENGTH)
             agent._invalid_json_retries = 0
             if plan.retry:
-                agent._emit_diagnostic_wait(f"↻ tool call cut off, not run — retrying: {', '.join(plan.steps) or 'retrying'}")
+                with suppress(Exception):
+                    agent._emit_diagnostic_wait(f"↻ tool call cut off, not run — retrying: {', '.join(plan.steps) or 'retrying'}")
                 return _verdict("continue")
             agent._vprint(
                 f"{agent.log_prefix}⚠️  Truncated tool call arguments after {MAX_ATTEMPTS} recovery attempts "

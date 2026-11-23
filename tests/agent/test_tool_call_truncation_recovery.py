@@ -153,7 +153,7 @@ class TestOutputCapTruncation:
     def test_exhausted_ladder_names_the_output_limit(self, agent):
         agent.client.chat.completions.create.side_effect = [_partial(usage=CAP_HIT) for _ in range(12)]
         result = _run(agent)
-        assert "hit its output limit on every one" in result["final_response"]
+        assert "hit its output length limit on every one" in result["final_response"]
         assert "/model" in result["final_response"]
 
 
@@ -187,6 +187,11 @@ class TestSequentialCalls:
 
 
 class TestRoutersThatRewriteFinishReason:
+    def test_a_rewritten_finish_reason_is_never_blamed_on_the_output_limit(self, agent):
+        agent.client.chat.completions.create.side_effect = [_partial(finish="tool_calls") for _ in range(12)]
+        text = _run(agent)["final_response"]
+        assert "never reported hitting" in text and "output length limit" not in text
+
     def test_truncated_args_with_finish_reason_tool_calls_recover_too(self, agent):
         """The tool-validation path (router turned ``length`` into ``tool_calls``) used to end the turn
         on the first sighting; it now takes the same ladder."""

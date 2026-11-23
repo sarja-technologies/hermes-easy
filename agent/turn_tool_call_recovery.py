@@ -35,6 +35,8 @@ _FULL_SLOT_SHARE = 0.985
 # Output room worth retrying into; below it the prompt itself must shrink first.
 _MIN_USEFUL_OUTPUT = 3072
 _CAP_HEADROOM = 256
+# Largest output cap the ladder offers when the model advertises no limit of its own.
+_CAP_CEILING = 131072
 # Floor for a learned window: llama.cpp slots are never this small for a 64K-minimum agent, so a
 # smaller observation is a stream cut, not a window.
 _MIN_LEARNED_WINDOW = 16384
@@ -43,6 +45,7 @@ CONTEXT_FULL = "context_full"
 OUTPUT_CAP = "output_cap"
 STREAM_DROP = "stream_drop"
 UNKNOWN = "unknown"
+UNREPORTED = "unreported"  # args cut mid-JSON but the server never reported hitting a limit (router/transport)
 
 _SMALLER_PIECES_NUDGE = (
     "[System: Your previous tool call was cut off before its arguments were complete, so it was NOT run "
@@ -95,9 +98,11 @@ def _window_of(agent: Any) -> int:
     return int(getattr(getattr(agent, "context_compressor", None), "context_length", 0) or 0)
 
 
-def classify_length_stop(agent: Any, response: Any = None, api_kwargs: Any = None, *, stream_drop: bool = False) -> LengthStop:
+def classify_length_stop(agent: Any, response: Any = None, api_kwargs: Any = None, *, stream_drop: bool = False,
+                         reported: bool = True) -> LengthStop:
     """Measure a truncated response. ``response`` may be None (validation path): the compressor's last
-    usage stands in for it."""
+    usage stands in for it. ``reported`` is False when the server never said ``length`` (a router rewrote
+    it): such a stop is blamed on neither the output cap nor the window unless the numbers prove it."""
     prompt, completion = _usage_tokens(agent, response)
     window = _window_of(agent)
     requested = 0
@@ -112,6 +117,8 @@ def classify_length_stop(agent: Any, response: Any = None, api_kwargs: Any = Non
         stop.kind = CONTEXT_FULL  # nothing useful fits even if the server had not cut it
     elif requested and completion >= requested * 0.98:
         stop.kind = OUTPUT_CAP
+    elif not reported:
+        stop.kind = UNREPORTED
     elif response is None or not completion:
         stop.kind = UNKNOWN
     else:
@@ -179,8 +186,9 @@ def _cap_for(agent: Any, stop: LengthStop, attempt: int) -> Optional[int]:
     from agent.turn_truncation import boosted_output_cap
 
     configured = agent.max_tokens if isinstance(getattr(agent, "max_tokens", None), int) else 0
-    base = max(stop.requested_cap, stop.completion_tokens, configured, 4096)
+    base = configured or stop.requested_cap or stop.completion_tokens or 4096
     cap = boosted_output_cap(agent, stop.requested_cap or None, attempt, base=base)
+    cap = min(cap, max(_CAP_CEILING, stop.requested_cap))  # doubling stops at a sane ceiling, never below the request
     if stop.window and stop.prompt_tokens:
         cap = min(cap, stop.window - stop.prompt_tokens - _CAP_HEADROOM)
     # At the model's own ceiling the ladder returns the cap it was given: re-sending it (with the smaller-pieces
@@ -198,7 +206,8 @@ def reset_tool_call_recovery(agent: Any) -> None:
     _reset(agent)
 
 
-def plan_recovery(agent: Any, response: Any = None, api_kwargs: Any = None, *, stream_drop: bool = False) -> RecoveryPlan:
+def plan_recovery(agent: Any, response: Any = None, api_kwargs: Any = None, *, stream_drop: bool = False,
+                  reported: bool = True) -> RecoveryPlan:
     """Decide what the next request should look like after a truncated tool call, and arm it.
 
     Arming sets the one-shot output cap and request-only nudge the request builder consumes; the caller
@@ -206,7 +215,7 @@ def plan_recovery(agent: Any, response: Any = None, api_kwargs: Any = None, *, s
     attempt = int(getattr(agent, "_tool_trunc_attempts", 0) or 0) + 1
     agent._tool_trunc_attempts = attempt
     tried: list[str] = list(getattr(agent, "_tool_trunc_tried", None) or [])
-    stop = classify_length_stop(agent, response, api_kwargs, stream_drop=stream_drop)
+    stop = classify_length_stop(agent, response, api_kwargs, stream_drop=stream_drop, reported=reported)
 
     corrected = adopt_real_window(agent, stop) if stop.kind != STREAM_DROP else None
     if corrected:
@@ -253,9 +262,15 @@ def _give_up(agent: Any, stop: LengthStop, tried: list[str], attempts: int) -> R
     elif stop.kind == STREAM_DROP:
         cause = "The connection to the model kept dropping while it was writing the action."
         advice = "Check the model server, then send `/retry`."
+    elif stop.kind == UNREPORTED:
+        cause = (
+            f"The action arrived cut off on every one of {attempts} attempts, but the server never reported hitting "
+            "a limit, so this is most likely a dropped connection or a provider/router cutting the reply short."
+        )
+        advice = "Check the connection or the router in front of the model, then send `/retry`."
     else:
         cause = (
-            f"The model hit its output limit on every one of {attempts} attempts"
+            f"The model hit its output length limit on every one of {attempts} attempts"
             + (f" (about {stop.completion_tokens:,} tokens each)" if stop.completion_tokens else "")
             + ", even asked for smaller pieces."
         )
