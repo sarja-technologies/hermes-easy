@@ -140,6 +140,11 @@ _CEILING_NO_TEXT = (
 # Below this many free tokens the prompt itself filled the window: a continuation nudge +
 # fragment costs ~100 tokens per attempt, so retrying only shrinks the room (#106120).
 _MIN_CONTINUATION_HEADROOM = 512
+# A long answer (a whole module, a long report) legitimately spans many output windows: keep going while
+# every round adds real text, and stop at the cap or at the first round that adds nothing.
+_MAX_TEXT_CONTINUATIONS = 12
+_FREE_CONTINUATIONS = 4  # rounds 1-3 never need to prove progress (thinking-only rounds are normal)
+_SUBSTANTIVE_CHARS = 200  # a round past the free ones must have written at least this much to earn another
 _WINDOW_FILLED = (
     "⚠️ **Context window full.** The prompt used {prompt:,} of this model's {ctx:,}-token "
     "context window, leaving no room to answer in. This is a context-window limit, not an "
@@ -335,21 +340,25 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         st.truncated_response_parts.append((_interim_content, st.is_stub))
 
     filled = st.window_filled
-    if n < 4 and filled is None:
+    progressing = n < _FREE_CONTINUATIONS or len((_interim_content or "").strip()) >= _SUBSTANTIVE_CHARS
+    if n < _MAX_TEXT_CONTINUATIONS and progressing and filled is None:
         _dropped_tools = getattr(st.response, "_dropped_tool_names", None)
         if st.is_stub and _dropped_tools:
             agent._vprint(
                 f"{agent.log_prefix}↻ Stream interrupted mid "
-                f"tool-call ({', '.join(_dropped_tools[:3])}) — requesting chunked retry ({n}/4)...", diagnostic=True,
+                f"tool-call ({', '.join(_dropped_tools[:3])}) — requesting chunked retry ({n}/{_MAX_TEXT_CONTINUATIONS})...", diagnostic=True,
             )
         elif st.is_stub:
-            agent._vprint(f"{agent.log_prefix}↻ Stream interrupted — requesting continuation ({n}/4)...", diagnostic=True)
+            agent._vprint(f"{agent.log_prefix}↻ Stream interrupted — requesting continuation ({n}/{_MAX_TEXT_CONTINUATIONS})...", diagnostic=True)
         else:
-            agent._vprint(f"{agent.log_prefix}↻ Requesting continuation ({n}/4)...", diagnostic=True)
+            agent._vprint(f"{agent.log_prefix}↻ Requesting continuation ({n}/{_MAX_TEXT_CONTINUATIONS})...", diagnostic=True)
         append_message(messages, {
             "role": "user", "content": _get_continuation_prompt(st.is_stub, _dropped_tools),
             "_length_continuation_nudge": True,
         })
+        agent._clear_status_buffer()
+        with suppress(Exception):
+            agent._emit_diagnostic_wait(f"↻ reply hit the output limit — continuing ({n}/{_MAX_TEXT_CONTINUATIONS})")
         agent._session_messages = messages
         _retry.restart_with_length_continuation = True
         return st.done("break")
@@ -364,7 +373,7 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     agent._vprint(
         f"{agent.log_prefix}⚠️  Not continuing — each attempt would only grow the prompt."
         if filled is not None else
-        f"{agent.log_prefix}⚠️  Response still truncated after {n} continuation attempts — "
+        f"{agent.log_prefix}⚠️  Response still truncated after {n} continuation attempt(s) — "
         + ("keeping the partial response received so far." if partial_response
            else "no visible text was produced."),
         force=True, diagnostic=True,
@@ -377,7 +386,7 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         )
     return st.end_turn(
         partial_response or _CEILING_NO_TEXT,
-        "Response remained truncated after 4 continuation attempts",
+        f"Response remained truncated after {n} continuation attempts",
     )
 
 
@@ -544,52 +553,41 @@ def boosted_output_cap(agent: Any, requested_cap: Optional[int], n: int, base: O
     return min(boost, limit) if limit else boost
 
 
-def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict:
-    """Truncated tool call: re-run the same call (up to 4×) with a boosted max_tokens —
-    a real output-cap truncation needs it, harmless for a network stall — else refuse to
-    execute incomplete arguments."""
+def _retry_truncated_tool_call(st: _Trunc, _retry: TurnRetryState, api_kwargs: Any) -> TruncationVerdict:
+    """Truncated tool call: never run it, never store it. ``plan_recovery`` classifies the stop (full
+    context slot / output cap / dropped stream), corrects a wrong window, and arms a changed request
+    (smaller pieces, bounded cap); the iteration restarts so preflight compression sees the corrected
+    window. Only a spent ladder ends the turn, with copy naming the real cause."""
+    from agent.turn_tool_call_recovery import MAX_ATTEMPTS, plan_recovery
+
     agent = st.agent
-    if st.truncated_tool_call_retries < 4:
-        st.truncated_tool_call_retries += 1
-        n = st.truncated_tool_call_retries
-        if st.is_stub:
-            agent._buffer_vprint(f"⚠️  Stream interrupted mid tool-call — retrying ({n}/4)...")
-        else:
-            agent._buffer_vprint(f"⚠️  Truncated tool call detected — retrying API call ({n}/4)...")
-        agent._ephemeral_max_output_tokens = boosted_output_cap(
-            agent, agent._requested_output_cap_from_api_kwargs(api_kwargs), n
-        )
-        return st.done("continue")  # don't append the broken response
+    plan = plan_recovery(agent, st.response, api_kwargs, stream_drop=st.is_stub)
+    st.truncated_tool_call_retries += 1
+    if plan.retry:
+        what = "Stream interrupted mid tool-call" if st.is_stub else "Tool call cut off"
+        summary = ", ".join(plan.steps) or "retrying"
+        # The recovery is announced on the live status (a diagnostic wait notice), not as a scrollback line,
+        # and the truncation banner buffered a moment ago is dropped: it is only shown if recovery fails.
+        agent._clear_status_buffer()
+        with suppress(Exception):
+            agent._emit_diagnostic_wait(f"↻ {what.lower()}, not run — retrying: {summary}")
+        agent._length_escalation = {"cap": plan.cap}
+        _retry.restart_with_length_continuation = True
+        return st.done("break")
     agent._flush_status_buffer()
-    _failure = FailoverReason.timeout.value if st.is_stub else "truncated"
-    if st.is_stub and getattr(st.response, "_clean_eof", False):
-        # #102766: no transport error — the server (or a proxy) closed the stream cleanly
-        # without a finish_reason, so "check your network" copy / a timeout stamp would mislead.
-        agent._vprint(
-            f"{agent.log_prefix}⚠️  Server kept closing the stream mid tool-call after 4 retries — the action was not executed.",
-            force=True, diagnostic=True,
-        )
-        _final_response = site_copy("stream_closed_tool_call", label=provider_label_for(agent.provider))
-        _failure = "truncated"
-    elif st.is_stub:
-        agent._vprint(
-            f"{agent.log_prefix}⚠️  Stream kept dropping mid tool-call after 4 retries — the action was not executed.",
-            force=True, diagnostic=True,
-        )
-        _final_response = site_copy("stream_dropped_tool_call", label=provider_label_for(agent.provider))
-    else:
-        agent._vprint(
-            f"{agent.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
-            force=True, diagnostic=True,
-        )
-        _final_response = _TRUNCATED_FINAL
-    agent._cleanup_task_resources(st.effective_task_id)
-    # Prior tool batches can leave a tool-result tail; this path never reaches finalize_turn.
-    close_interrupted_tool_sequence(st.messages, _final_response)
-    return st.end_turn(
-        _final_response, cleanup=False,
-        failure=(_failure, True),
+    agent._vprint(
+        f"{agent.log_prefix}⚠️  Tool call still truncated after {MAX_ATTEMPTS} recovery attempts — "
+        "refusing to execute incomplete tool arguments.", force=True, diagnostic=True,
     )
+    agent._cleanup_task_resources(st.effective_task_id)
+    message, failure = plan.message, "truncated"
+    if st.is_stub:  # keep the wording that tells a dropped network from a server that closed the stream cleanly
+        clean_eof = getattr(st.response, "_clean_eof", False)
+        message = site_copy("stream_closed_tool_call" if clean_eof else "stream_dropped_tool_call",
+                            label=provider_label_for(agent.provider))
+        failure = "truncated" if clean_eof else FailoverReason.timeout.value
+    close_interrupted_tool_sequence(st.messages, message)
+    return st.end_turn(message, plan.error, cleanup=False, failure=(failure, True))
 
 
 def recover_from_truncation(
@@ -629,7 +627,10 @@ def recover_from_truncation(
                    f"({st.window_filled[0]:,}/{st.window_filled[1]:,} tokens)")
     else:
         _banner = "Response truncated (finish_reason='length') - model hit max output tokens"
-    agent._vprint(f"{agent.log_prefix}⚠️  {_banner}", force=True, diagnostic=True)
+    # Buffered: a truncation the loop recovers from is a status, not an error, so the line is dropped when the
+    # turn recovers and flushed (with the final message) only when every recovery attempt is exhausted.
+    logger.warning("%s%s", agent.log_prefix, _banner)
+    agent._buffer_vprint(f"⚠️  {_banner}")
 
     # #106260: a context-overflow error after partial delivery must not seed a
     # continuation. _partial_stream_stub marks such stubs _overflow_terminal and
@@ -684,7 +685,7 @@ def recover_from_truncation(
         if _trunc_msg is not None:
             if not _trunc_has_tool_calls:
                 return _continue_text(st, _retry, _trunc_msg)
-            return _retry_truncated_tool_call(st, api_kwargs)
+            return _retry_truncated_tool_call(st, _retry, api_kwargs)
 
     if len(messages) > 1:
         agent._vprint(f"{agent.log_prefix}   ⏪ Rolling back to last complete assistant turn", diagnostic=True)

@@ -1740,6 +1740,8 @@ def _run_conversation_turn(
     agent._len_reasoning_streak = 0
     agent._len_reasoning_tried = []
     agent._len_reasoning_last_call = -1
+    agent._tool_trunc_attempts = 0
+    agent._tool_trunc_tried = []
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
 

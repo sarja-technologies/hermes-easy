@@ -17,8 +17,7 @@ from typing import Any, Dict, List, Optional
 from agent.message_metadata import append_message
 from agent.message_sanitization import (close_interrupted_tool_sequence, coalesce_tool_call_id,
                                           normalize_provider_tool_call_ids)
-from agent.turn_failure_copy import site_copy, stamp_failure
-from hermes_constants import FINISH_REASON_LENGTH
+from agent.turn_failure_copy import stamp_failure
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -218,21 +217,23 @@ def validate_tool_calls(
             for tc in tool_calls if tc.function.name in invalid_names
         )
         if _truncated:
-            agent._vprint(
-                f"{agent.log_prefix}⚠️  Truncated tool call arguments detected "
-                f"(finish_reason={finish_reason!r}) — refusing to execute.",
-                force=True, diagnostic=True,
-            )
+            # Arguments cut off mid-stream (a router rewrote ``length`` → ``tool_calls``, the slot filled,
+            # or the stream dropped). Never run them and never store them: recover with a changed request
+            # (see turn_tool_call_recovery) instead of ending the turn.
+            from agent.turn_tool_call_recovery import MAX_ATTEMPTS, plan_recovery
+
+            plan = plan_recovery(agent, None, None, stream_drop=False)
             agent._invalid_json_retries = 0
-            agent._cleanup_task_resources(effective_task_id)
-            # Blame the output cap only when the model reported one; otherwise the args
-            # were cut by a stream break or a router rewriting finish_reason (#91717).
-            _copy = (
-                site_copy("truncated") if finish_reason == FINISH_REASON_LENGTH
-                else site_copy("truncated_unreported")
+            if plan.retry:
+                agent._emit_diagnostic_wait(f"↻ tool call cut off, not run — retrying: {', '.join(plan.steps) or 'retrying'}")
+                return _verdict("continue")
+            agent._vprint(
+                f"{agent.log_prefix}⚠️  Truncated tool call arguments after {MAX_ATTEMPTS} recovery attempts "
+                f"(finish_reason={finish_reason!r}) — refusing to execute.", force=True, diagnostic=True,
             )
+            agent._cleanup_task_resources(effective_task_id)
             return _verdict("return", _partial_exit(
-                agent, messages, conversation_history, api_call_count, _copy,
+                agent, messages, conversation_history, api_call_count, plan.message,
             ))
 
         agent._invalid_json_retries += 1

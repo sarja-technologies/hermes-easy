@@ -14,18 +14,21 @@ def _agent(max_tokens, requested_cap, **extra):
         max_tokens=max_tokens,
         _ephemeral_max_output_tokens=None,
         _buffer_vprint=lambda *a, **k: None,
+        _clear_status_buffer=lambda: None,
         _requested_output_cap_from_api_kwargs=lambda kw: requested_cap,
-        **extra,
+        **{"provider": "custom", "api_mode": "chat_completions", **extra},
     )
 
 
 def _tool_call_budgets(agent, attempts=4):
-    st = SimpleNamespace(agent=agent, truncated_tool_call_retries=0, is_stub=False)
+    st = SimpleNamespace(agent=agent, truncated_tool_call_retries=0, is_stub=False, response=SimpleNamespace(usage=None))
     st.done = lambda action, result=None: action
     budgets = []
     for _ in range(attempts):
-        assert _retry_truncated_tool_call(st, {}) == "continue"
-        budgets.append(agent._ephemeral_max_output_tokens)
+        # A truncated tool call restarts the iteration (so preflight compression sees the corrected
+        # window) and hands the next request its escalated cap.
+        assert _retry_truncated_tool_call(st, TurnRetryState(), {}) == "break"
+        budgets.append(agent._length_escalation["cap"])
     return budgets
 
 

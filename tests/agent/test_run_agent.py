@@ -4362,10 +4362,10 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("hello")
 
-        # Should return immediately — no continuation, only 1 API call
+        # Reasoning-only truncation escalates a bounded number of times (reasoning off + bigger cap,
+        # then an answer-now nudge) instead of repeating itself, then names what it tried.
         assert result["completed"] is False
-        assert result["api_calls"] == 1
-        # Should have a user-friendly response (not None)
+        assert result["api_calls"] == 3
         assert result["final_response"] is not None
         assert "/reasoning" in result["final_response"]
 
@@ -4608,16 +4608,19 @@ class TestRunConversation:
         bad_resp = _mock_response(
             content="", finish_reason="tool_calls", tool_calls=[bad_tc],
         )
-        agent.client.chat.completions.create.side_effect = [good_resp, bad_resp]
+        # The truncated call is retried (recovery ladder) and never executed; the model keeps
+        # returning it, so the ladder is spent and the turn ends with the tool tail closed.
+        agent.client.chat.completions.create.side_effect = [good_resp] + [bad_resp] * 7
 
         with (
-            patch("model_tools.handle_function_call", return_value='{"success":true}'),
+            patch("model_tools.handle_function_call", return_value='{"success":true}') as mock_hfc,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
             result = agent.run_conversation("write then truncate")
 
+        mock_hfc.assert_called_once()  # only the complete call ran, the truncated one never did
         assert result.get("partial") is True
         msgs = result.get("messages") or []
         assert msgs[-1].get("role") == "assistant"
