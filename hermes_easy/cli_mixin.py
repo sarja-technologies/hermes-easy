@@ -75,8 +75,63 @@ class EasyUIMixin:
 
     def _agent_status_print(self, *args, **kwargs) -> None:
         if hermes_easy.active() and len(args) == 1 and isinstance(args[0], str):
+            if args[0].lstrip().startswith("↻"):  # the runtime is recovering (cut-off reply, retry, reconnect)
+                layout.ledger_for(self).note_recovery(args[0])
             args = (layout.clean_status(args[0]),)
         return _upstream("_agent_status_print")(self, *args, **kwargs)
+
+    # ── activity ledger (real runtime events only) ───────────────────────────────────────
+
+    def _on_tool_progress(self, event_type, function_name=None, preview=None, function_args=None, **kwargs):
+        if hermes_easy.active():
+            try:
+                self._easy_record_event(event_type, function_name, function_args, kwargs)
+            except Exception:  # health: allow BLE001 -- bookkeeping must never break a turn
+                pass
+        return _upstream("_on_tool_progress")(self, event_type, function_name, preview, function_args, **kwargs)
+
+    def _turn_summary_emit(self) -> None:
+        """End of a turn (finished, failed or interrupted): print the tool group still open, then the footer."""
+        if hermes_easy.active():
+            from cli import _cprint
+            for row in layout.flush_group():
+                _cprint(row)
+        return _upstream("_turn_summary_emit")(self)
+
+    def _on_thinking(self, text):
+        # The runtime's recovery notices (``↻ …``) arrive here as diagnostics, which the CLI may not render.
+        if hermes_easy.active() and isinstance(text, str) and text.lstrip().startswith("↻"):
+            layout.ledger_for(self).note_recovery(text)
+        return _upstream("_on_thinking")(self, text)
+
+    def _stream_delta(self, text):
+        if hermes_easy.active() and text:
+            layout.ledger_for(self).note_text()
+        return _upstream("_stream_delta")(self, text)
+
+    def _stream_reasoning_delta(self, text):
+        if hermes_easy.active() and text:
+            layout.ledger_for(self).note_reasoning()
+        return _upstream("_stream_reasoning_delta")(self, text)
+
+    def _easy_record_event(self, event_type, name, args, kwargs) -> None:
+        from agent.display import _detect_tool_failure, get_tool_row_parts, is_neutral_failure
+        led = layout.ledger_for(self)
+        if event_type == "tool.started" and name:
+            parts = get_tool_row_parts(name, args or {})
+            label = " ".join(p for p in (parts[0][1], parts[0][2]) if p) if parts else name
+            if name == "terminal" and (args or {}).get("command"):  # the command as run, not upstream's "+ 2 commands" digest
+                label = "$ " + " ".join(str(args["command"]).split())[:160]
+            task_id = getattr(getattr(self, "agent", None), "session_id", None)
+            led.tool_started(name, args, label=label or name, task_id=task_id)
+        elif event_type == "tool.completed" and name:
+            result = kwargs.get("result")
+            failed, _suffix = _detect_tool_failure(name, result)
+            failed = bool(failed or kwargs.get("is_error"))
+            led.tool_completed(name, result, failed=failed, neutral=failed and is_neutral_failure(name, result),
+                               duration=kwargs.get("duration"))
+        elif event_type and event_type.startswith("reasoning"):
+            led.note_reasoning()
 
     def _print_random_tip(self) -> None:
         if hermes_easy.active():
@@ -137,7 +192,9 @@ class EasyUIMixin:
                 if document.is_cursor_at_the_end_of_line:
                     lines[document.cursor_position_row] += " "
                 width = composer.content_width(self._get_tui_terminal_width())
-                max_height = max(1, min(8, composer.terminal_rows(self) - 5))
+                # A large prompt gets room to be read: up to half the terminal, never the whole screen.
+                rows = composer.terminal_rows(self)
+                max_height = max(1, min(max(8, rows // 2), rows - 6))
                 return _estimate_tui_input_height(lines, "", max(1, width - 2), max_height=max_height)
 
             area.window.height = input_height

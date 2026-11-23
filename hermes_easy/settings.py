@@ -68,6 +68,10 @@ FIELDS: tuple[Field, ...] = (
           (("compact", "One line per call"), ("preview", "Line + output preview"),
            ("full", "Full output"), ("hidden", "Hidden")),
           "Ctrl+O prints the full output of the latest tool call whatever is chosen here."),
+    Field("layout", "tool_groups", "Tool grouping", "grouped",
+          (("grouped", "Grouped (Ran 4 shell commands)"), ("rows", "One row per call")),
+          "Grouped prints one summary per run of tool calls and shows failures inline; "
+          "Ctrl+O expands the latest group (again: the one before)."),
     Field("status", "line", "Status line", "standard",
           (("standard", "Standard"), ("minimal", "Minimal"), ("full", "Full (upstream)"), ("off", "Off")),
           "Standard: approvals, model and measured decode speed. Minimal: approvals and model. "
@@ -76,6 +80,9 @@ FIELDS: tuple[Field, ...] = (
           "Show the keys that work right now at the right of the status line."),
     Field("status", "turn_summary", "Turn summary", True, (),
           "A dim line after each turn: time taken and what the tools did."),
+    Field("status", "activity_word", "Playful word", True, (),
+          "A rotating word beside the live status while the agent works. The real status, time, "
+          "tokens and context are always shown next to it."),
     Field("motion", "spinner", "Activity indicator", "dots",
           (("dots", "Dots"), ("line", "Line"), ("pulse", "Pulse"), ("static", "Static")),
           "Shown above the composer while the agent works."),

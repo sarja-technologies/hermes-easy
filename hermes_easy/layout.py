@@ -18,8 +18,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import time
 
+from hermes_easy import activity
 from hermes_easy import settings as ui
 from hermes_easy.theme import RESET, hex_fg, palette
 
@@ -162,6 +164,7 @@ def resumed_rows(cli):
 
 def answer_open(timestamp: str = "") -> str | None:
     """Printed before the first answer line: a gap, plus a name in the labeled layout."""
+    flushed = flush_group()
     gap = _gap("answer")
     label = ""
     if ui.get("layout.messages") == "labeled":
@@ -169,8 +172,12 @@ def answer_open(timestamp: str = "") -> str | None:
     if timestamp:
         label = f"{label} {_c('dim')}{timestamp}{RESET}".strip()
     if label:
-        return f"{gap}{label}" if gap else label
-    return "" if gap else None
+        label = f"{gap}{label}" if gap else label
+    elif gap:
+        label = ""
+    else:
+        label = None
+    return _with_rows(flushed, label)
 
 
 def answer_text_ansi() -> str:
@@ -209,12 +216,14 @@ def stream_code_line(cli, line: str) -> str | None:
 # ── reasoning ────────────────────────────────────────────────────────────────────────────
 
 def reasoning_open() -> str | None:
+    flushed = flush_group()
     gap = _gap("reasoning")
-    return "" if gap else None
+    return _with_rows(flushed, "" if gap else None)
 
 
 def reasoning_line(line: str) -> str:
-    return f"{_c('dim')}{line}{RESET}"
+    """Provider-exposed reasoning, in the near-white strong colour: it is what the agent is doing."""
+    return f"{_c('strong')}{line}{RESET}"
 
 
 def thought_line(seconds: float | None) -> str:
@@ -225,12 +234,114 @@ def thought_line(seconds: float | None) -> str:
 def thought_rows(seconds: float | None, text: str, full: bool) -> list[str]:
     lines = (text or "").strip().splitlines()
     shown = lines if full or len(lines) <= 10 else lines[:10]
+    flushed = flush_group()
     gap = _gap("reasoning")
-    rows = [""] if gap else []
+    rows = flushed + ([""] if gap else [])
     rows += [reasoning_line(line) for line in shown]
     if len(shown) < len(lines):
         rows.append(f"{_c('dim')}… {len(lines) - len(shown)} more lines (/reasoning full){RESET}")
     return [*rows, thought_line(seconds)]
+
+
+# ── tool groups ──────────────────────────────────────────────────────────────────────────
+
+_CATEGORY_ROLE = {"shell": "tool", "tests": "tool", "browser": "tool", "read": "accent", "search": "accent",
+                  "web": "accent", "agent": "accent", "edit": "strong", "other": "dim"}
+_hint_shown = {"done": False}
+
+
+def ledger_of(cli=None):
+    """The turn ledger of *cli* (or the process's one CLI); None before any turn."""
+    led = getattr(cli, "__dict__", {}).get("_easy_ledger") if cli is not None else None
+    return led or activity.CURRENT
+
+
+def _with_rows(rows: list[str], tail: str | None) -> str | None:
+    """Rows printed before a block, then the block's own opening (None = nothing to print)."""
+    if not rows:
+        return tail
+    return "\n".join(rows + ([tail] if tail is not None else []))
+
+
+def _dur(seconds: float) -> str:
+    return f"{seconds:.1f}s" if seconds < 60 else f"{int(seconds // 60)}m {int(seconds % 60):02d}s"
+
+
+def _error_excerpt(call, lines: int) -> list[str]:
+    text = (call.error or call.output or "").strip("\n")
+    rows = [r for r in text.split("\n") if r.strip()]
+    return rows[-lines:] if call.output and not call.error else rows[:lines]
+
+
+def group_rows(group) -> list[str]:
+    """The collapsed form of a finished group: one summary row, failures listed under it."""
+    from hermes_easy.composer import safe_display
+    parts = activity.summary_parts(group)
+    if not parts:
+        return []
+    failed = group.failed
+    mark = f"{_c('error', bold=True)}✗{RESET}" if failed else f"{_c('ok')}•{RESET}"
+    summary = f"{_c('dim')} · {RESET}".join(
+        f"{_c(_CATEGORY_ROLE.get(cat, 'dim'), bold=cat == 'edit')}{text}{RESET}" for cat, text in parts)
+    total = sum(c.elapsed() for c in group.calls)
+    line = f"{mark} {summary}"
+    if total >= 0.1:
+        line += f"  {_c('dim')}{_dur(total)}{RESET}"
+    if not _hint_shown["done"] and ui.get("status.key_hints"):
+        _hint_shown["done"] = True
+        line += f"  {_c('dim')}Ctrl+O to expand{RESET}"
+    rows = [_gap("tool") + line]
+    columns = shutil.get_terminal_size((100, 24)).columns
+    for call in failed[:3]:
+        code = f"exit {call.exit_code}" if call.exit_code else "failed"
+        tail = f"{code} · {_dur(call.elapsed())}"
+        room = max(12, columns - len(tail) - 8)
+        label = safe_display(call.label)
+        label = label if len(label) <= room else label[:room - 1] + "…"  # the full command is in Ctrl+O
+        rows.append(f"  {_c('error')}✗{RESET} {label}  {_c('dim')}{tail}{RESET}")
+        rows += [f"    {_c('dim')}{'↳' if i == 0 else ' '} {safe_display(r)}{RESET}"
+                 for i, r in enumerate(_error_excerpt(call, 3))]
+    if len(failed) > 3:
+        rows.append(f"  {_c('dim')}… {len(failed) - 3} more failed · Ctrl+O for all{RESET}")
+    return rows
+
+
+def group_detail_rows(group, *, tail: int = 8, failed_tail: int = 30) -> list[str]:
+    """The expanded form: every call with its command, directory, machine, time, exit status and output."""
+    from hermes_easy.composer import safe_display
+    parts = activity.summary_parts(group)
+    rows = [""] if ui.get("layout.spacing") == "comfortable" else []
+    head = f"{_c('error', bold=True)}✗{RESET}" if group.failed else f"{_c('dim')}•{RESET}"
+    rows.append(f"{head} " + f"{_c('dim')} · {RESET}".join(
+        f"{_c(_CATEGORY_ROLE.get(cat, 'dim'), bold=cat == 'edit')}{text}{RESET}" for cat, text in parts))
+    for call in group.calls:
+        bad = call.failed and not call.neutral
+        mark = f"{_c('error', bold=True)}✗{RESET}" if bad else f"{_c('ok')}✓{RESET}" if not call.running else f"{_c('tool')}…{RESET}"
+        rows.append(f"  {mark} {_c('strong', bold=True)}{safe_display(call.label)}{RESET}")
+        meta = [short_paths(tilde(call.cwd)) if call.cwd and call.category in {"shell", "tests"} else "",
+                call.machine, call.agent, _dur(call.elapsed()),
+                f"exit {call.exit_code}" if call.exit_code is not None else ""]
+        rows.append(f"    {_c('dim')}{' · '.join(m for m in meta if m)}{RESET}")
+        body = (call.output if not bad or call.output else call.error).rstrip("\n").split("\n")
+        body = [b for b in body if b.strip()] if call.output or call.error else []
+        limit = failed_tail if bad else tail
+        shown = body[-limit:] if bad else body[:limit]
+        rows += [f"    {_c('error' if bad else 'dim')}{safe_display(line)}{RESET}" for line in shown]
+        if len(body) > len(shown):
+            rows.append(f"    {_c('dim')}… {len(body) - len(shown)} more lines{RESET}")
+    return rows
+
+
+def flush_group() -> list[str]:
+    """Close the running group (the model wrote text, reasoned, or the turn ended) and return its rows."""
+    led = activity.CURRENT
+    if led is None or ui.get("layout.tool_groups") != "grouped":
+        return []
+    group = led.close_group()
+    if group is None:
+        return []
+    activity.save(led, led.session_id)
+    return group_rows(group)
 
 
 # ── tool rows ────────────────────────────────────────────────────────────────────────────
@@ -299,6 +410,8 @@ def tool_row(cli, function_name: str, args: dict | None, duration: float, result
     rows = get_tool_row_parts(function_name, args or {}, result, is_error=bool(is_error))
     neutral = is_neutral_failure(function_name, result)
     label_for_expand = ""
+    led = ledger_of(cli)
+    grouped = ui.get("layout.tool_groups") == "grouped" and led is not None and led.claim_completed(function_name)
     out = []
     for index, (_emoji, verb, detail, suffix) in enumerate(rows):
         verb = (verb or function_name).strip()
@@ -315,8 +428,8 @@ def tool_row(cli, function_name: str, args: dict | None, duration: float, result
             line += f"{_c('dim') if neutral else _c('error')}{suffix}{RESET}"
         out.append(line)
     _remember(cli, function_name, label_for_expand, result)
-    if density == "hidden":
-        return None
+    if grouped or density == "hidden":
+        return None  # a grouped call is summarised when its group closes (flush_group)
     if density == "compact" and function_name == "terminal":
         output = _result_text(result, include_metadata=False).splitlines()
         if output and output[0].strip():
@@ -330,7 +443,19 @@ def tool_row(cli, function_name: str, args: dict | None, duration: float, result
 
 
 def expand_last_tool_output(cli) -> list[str]:
-    """Rows Ctrl+O prints: the latest call's full output under its label."""
+    """Rows Ctrl+O prints. Grouped: the latest group in full (again within 6 s: the group before it).
+    Rows mode, or nothing grouped yet: the latest call's output."""
+    led = ledger_of(cli)
+    if led is not None and ui.get("layout.tool_groups") == "grouped":
+        now = time.monotonic()
+        back = cli.__dict__.get("_easy_expand_back", -1) + 1 if now - cli.__dict__.get("_easy_expand_at", 0) < 6 else 0
+        group = led.last_group(back)
+        if group is None and back:
+            back, group = 0, led.last_group(0)
+        if group is not None:
+            cli._easy_expand_back, cli._easy_expand_at = back, now
+            note_external_output()
+            return group_detail_rows(group)
     store = cli.__dict__.get("_easy_tool_outputs") or []
     if not store:
         return [f"{_c('dim')}No tool output yet.{RESET}"]
@@ -346,11 +471,12 @@ def expand_last_tool_output(cli) -> list[str]:
 
 def turn_footer(summary: str) -> str | None:
     if not ui.get("status.turn_summary"):
-        return None
+        return _with_rows(flush_group(), None)
+    flushed = flush_group()
     body = summary.lstrip("⋯ ").strip()
     if not body:
-        return None
-    return f"{_gap('footer')}{_c('dim')}{body}{RESET}"
+        return _with_rows(flushed, None)
+    return _with_rows(flushed, f"{_gap('footer')}{_c('dim')}{body}{RESET}")
 
 
 # ── live region ──────────────────────────────────────────────────────────────────────────
@@ -397,6 +523,69 @@ def indicator_frame() -> str:
     return frames[int(time.monotonic() * fps) % len(frames)]
 
 
+def ledger_for(cli):
+    """The CLI's activity ledger, created on first use and synchronised with the running turn."""
+    led = cli.__dict__.get("_easy_ledger")
+    if led is None:
+        led = cli._easy_ledger = activity.Ledger()
+        activity.CURRENT = led
+        sid = getattr(cli, "session_id", None)
+        if isinstance(sid, str) and sid:
+            led.session_id = sid
+            activity.load(led, sid)
+    started = getattr(cli, "_prompt_start_time", None)
+    if getattr(cli, "_agent_running", False) and started and led.turn_started != started:
+        led.start_turn(float(started))
+        agent = getattr(cli, "agent", None)
+        led.tokens0 = (int(getattr(agent, "session_input_tokens", 0) or 0),
+                       int(getattr(agent, "session_output_tokens", 0) or 0))
+    return led
+
+
+def _fg(role: str, *, italic: bool = False) -> str:
+    return ("italic " if italic else "") + f"fg:{palette()[role]}"
+
+
+def live_row(cli) -> list:
+    """The status row while the agent works: a playful word, then only real, current values."""
+    from hermes_easy import status
+    from hermes_easy.composer import content_width
+    snap = status.snapshot(cli) if ledger_for(cli) is not None else status.Snapshot()
+    word = snap.word if ui.get("status.activity_word") else ""
+    frags = [(_fg("accent"), indicator_frame() + " ")]
+    lead = 2
+    if word:
+        frags.append((_fg("dim", italic=True), word + "…  "))
+        lead += len(word) + 3
+    items = status.fit(status.fields(snap), content_width(cli._get_tui_terminal_width()), lead)
+    for index, (_key, role, text) in enumerate(items):
+        if index:
+            frags.append(("class:easy-dim", "  "))
+        frags.append((_fg(role), text))
+    return frags
+
+
+def live_tool_fragments(cli) -> list:
+    """One row per command that is running right now (never after it finishes)."""
+    from hermes_easy.composer import content_width, safe_display
+    led = cli.__dict__.get("_easy_ledger")
+    running = led.running_calls() if led is not None and getattr(cli, "_agent_running", False) else []
+    if not running:
+        return []
+    width = content_width(cli._get_tui_terminal_width())
+    now = time.time()
+    frags: list = []
+    for call in running[-3:]:
+        tail = f"  {_dur(call.elapsed(now))}" + (f" · {call.machine}" if call.machine and len(running) > 1 else "")
+        label = cli._trim_status_bar_text(safe_display(short_paths(call.label)), max(8, width - len(tail) - 4))
+        if frags:
+            frags.append(("", "\n"))
+        frags += [(_fg("tool"), "  ▸ "), ("", label), ("class:easy-dim", tail)]
+    if len(running) > 3:
+        frags += [("", "\n"), ("class:easy-dim", f"    … {len(running) - 3} more running")]
+    return frags
+
+
 def activity_fragments(cli) -> list:
     """One transient conversation row, reserved for activity and actionable model state."""
     from hermes_cli.cli_modern_layout import _turn_elapsed, activity_text
@@ -412,14 +601,16 @@ def activity_fragments(cli) -> list:
     }
     if busy:
         descriptions["loading"] = f"Loading {name}…"
-    activity = descriptions.get(state)
-    if not activity and busy:
-        activity = clean_activity(activity_text(cli)) or "Working…"
-    if not activity:
-        return []
+    activity_line = descriptions.get(state)
     problem = state in {"failed", "disconnected", "missing"}
+    if not activity_line and getattr(cli, "_agent_running", False) and not problem:
+        return live_row(cli)
+    if not activity_line and busy:
+        activity_line = clean_activity(activity_text(cli)) or "Working…"
+    if not activity_line:
+        return []
     mark = "!" if problem else indicator_frame()
-    rows = [(f"fg:{palette()['error' if problem else 'accent']}", mark + " "), ("", activity)]
+    rows = [(f"fg:{palette()['error' if problem else 'accent']}", mark + " "), ("", activity_line)]
     elapsed = _turn_elapsed(cli) if busy else ""
     if elapsed:
         rows.append(("class:easy-dim", "  " + elapsed))

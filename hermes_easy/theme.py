@@ -51,9 +51,12 @@ PRESETS: dict[str, dict[str, dict[str, Any]]] = {
                       surface="#EEF5EE", selection="#D6E6D6")},
 }
 
+# ok/warn/error carry meaning (finished / recoverable / failed). ``tool`` marks commands and tests that
+# run, ``think`` marks provider-exposed reasoning: two muted hues away from every status colour and
+# from violet (blue and warm grey).
 _STATUS = {
-    "dark": dict(ok="#7FBF7F", warn="#D9A441", error="#E06C6C"),
-    "light": dict(ok="#2E7D32", warn="#A86300", error="#C62828"),
+    "dark": dict(ok="#7FBF7F", warn="#D9A441", error="#E06C6C", tool="#7DA7D9", think="#B9AC9B"),
+    "light": dict(ok="#2E7D32", warn="#A86300", error="#C62828", tool="#2F5F9E", think="#7A6C58"),
 }
 
 

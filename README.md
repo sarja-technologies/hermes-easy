@@ -125,10 +125,12 @@ The same settings work without the panel:
 | `theme.background` | `#RRGGBB` set on terminals that accept OSC 11, or empty | empty |
 | `layout.spacing` | `comfortable`, `compact` | `comfortable` |
 | `layout.messages` | `glyph` (`›`), `labeled` (You / Hermes), `ruled` | `glyph` |
-| `layout.tool_output` | `compact` (one row), `preview` (first lines), `full`, `hidden` | `compact` |
+| `layout.tool_output` | `compact` (one row), `preview` (first lines), `full`, `hidden` (per-call rows; used with `layout.tool_groups: rows`) | `compact` |
+| `layout.tool_groups` | `grouped` (one summary per run of tool calls), `rows` (one row per call) | `grouped` |
 | `status.line` | `standard`, `minimal`, `full`, `off` | `standard` |
 | `status.key_hints` | `true`, `false` | `true` |
 | `status.turn_summary` | `true`, `false` | `true` |
+| `status.activity_word` | `true`, `false` (the rotating word beside the live status) | `true` |
 | `motion.spinner` | `dots`, `line`, `pulse`, `static` | `dots` |
 | `motion.reduced_motion` | `true`, `false` | `false` |
 
@@ -139,6 +141,36 @@ mapped to the 256-colour palette.
 
 ![Labeled messages and tool output previews with the Forest preset](assets/hermes-easy/labeled-preview.png)
 
+## Live status and tool groups
+
+While the agent works, one row above the composer shows what is really happening:
+
+```text
+✻ Tinkering…  Executing terminal · 12s  qwen3-coder-next  ↑12.4k ↓1.1k  ctx 48%  3 tools  Linux
+  ▸ $ pytest -q tests/unit  8.2s
+```
+
+The first word is decoration and rotates. Everything after it is read from the runtime: the status
+(`Thinking`, `Executing <tool>`, `Continuing` while the agent recovers from a cut-off reply or a
+dropped connection, `Waiting for you` at an approval), the turn clock, this turn's tokens from the
+provider's usage, the context window in use, the tool count (failures in red), `reasoning` while the
+provider streams its own reasoning, and the machine the running command executes on (local OS,
+`remote server <host>`, a container or a sandbox). A field with no real value is left out. Each
+running command gets its own row and disappears when it finishes.
+
+Finished tool calls collapse into one line per run of calls, printed when the model starts writing:
+
+```text
+• Ran 4 shell commands · Read 6 files · Edited 3 files  12.3s
+✗ Executed tests  2.1s
+  ✗ $ pytest -q  exit 1 · 2.1s
+    ↳ FAILED tests/test_a.py::test_b - assert 1 == 2
+```
+
+A failed call is always listed under its summary with its exit status and the end of its output.
+`Ctrl+O` prints the whole group. Subagents appear in the dock with their model and the machine
+their commands run on.
+
 ## Keys
 
 | Key | Action |
@@ -147,7 +179,7 @@ mapped to the 256-colour palette.
 | `Ctrl+J`, `Alt+Enter` | New line |
 | `Tab` | Complete a command or path |
 | `Ctrl+C` | Interrupt the agent; on an empty prompt, exit |
-| `Ctrl+O` | Show the full output of the last tool call |
+| `Ctrl+O` | Expand the latest group of tool calls (commands, directories, machine, time, exit status, output); again within 6 s, the group before it |
 | `Ctrl+P` | Command palette |
 | `Ctrl+G` | Edit the draft in `$EDITOR` |
 | `@` | Attach a file |

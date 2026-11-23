@@ -9,6 +9,7 @@ import time
 
 from prompt_toolkit.utils import get_cwidth
 
+import hermes_easy
 from agent.i18n import t
 from hermes_cli import cli_process_dock as procs
 from hermes_cli import cli_session_dock as session_rows
@@ -242,6 +243,9 @@ class SubagentMonitor:
             lines.append(_clip(' ' + t('cli.subagents.subagents_heading', count=len(self.entries)), columns))
             for row in self.entries[:agent_count]:
                 activity = f"{row['elapsed']}s · " + self._agent_activity(row)
+                if hermes_easy.active():  # which model, and where its commands really run
+                    from hermes_easy.activity import agent_detail
+                    activity = agent_detail(row) + activity
                 # Reserve activity even on narrow terminals; task names use the remainder.
                 goal_width = max(3, columns - get_cwidth(activity) - 5)
                 lines.append(_clip(f" ● {_clip(row.get('goal'), goal_width)} · {activity}", columns))

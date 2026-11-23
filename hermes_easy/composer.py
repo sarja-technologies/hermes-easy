@@ -94,6 +94,8 @@ def build(cli, parts, extras):
         keep_when(row(lambda: partial_response(cli)), lambda: bool(partial_text(cli))),
         keep_when(row(lambda: layout.activity_fragments(cli)),
                   lambda: normal() and bool(layout.activity_fragments(cli))),
+        keep_when(row(lambda: layout.live_tool_fragments(cli)),
+                  lambda: normal() and bool(layout.live_tool_fragments(cli))),
         parts["approval_widget"], parts["slash_confirm_widget"], parts["clarify_widget"],
         parts["model_picker_widget"], parts["command_palette_widget"],
         parts["connection_widget"], parts["sudo_widget"], parts["secret_widget"],
