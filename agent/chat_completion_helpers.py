@@ -1299,6 +1299,8 @@ def _reasoning_config_for_wire(agent):
     """
     cfg = agent.reasoning_config
     ephemeral_off = _consume_ephemeral_reasoning_off(agent)
+    # Set below only when the one-shot override really goes out (see _template_thinking_off).
+    agent._wire_ephemeral_reasoning_off = False
     if getattr(agent, "_reasoning_effort_rejected", False):
         # The route rejected the configured reasoning LEVEL itself (#100536: ``reasoning.effort:
         # max`` on an enabled config). Omit the reasoning fields until the route changes —
@@ -1333,6 +1335,7 @@ def _reasoning_config_for_wire(agent):
         return cfg
     if ephemeral_off:
         cfg = {**(cfg or {}), "enabled": False, "effort": "none"}
+        agent._wire_ephemeral_reasoning_off = True
     # What actually went out: the reasoning-rejection rung reads it to tell a rejected
     # disable (drop the disable) from a rejected level (drop the reasoning fields).
     agent._wire_reasoning_config = cfg
@@ -1432,6 +1435,28 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
 
 
 
+def _template_thinking_off(agent, api_kwargs: dict) -> dict:
+    """Make the one-shot "answer without thinking" override reach a local llama.cpp/vLLM-style server.
+
+    Such servers ignore ``reasoning_effort: none``; the switch their chat template reads is
+    ``chat_template_kwargs.enable_thinking``. Added only on the request that carries the one-shot
+    override (a reasoning-only length truncation) and only for a local/LAN endpoint, so hosted
+    OpenAI-compatible APIs never see the extra field."""
+    if not getattr(agent, "_wire_ephemeral_reasoning_off", False) or not isinstance(api_kwargs, dict):
+        return api_kwargs
+    from agent.model_metadata import is_local_endpoint
+    if not (_streams_llamacpp(agent) or is_local_endpoint(str(getattr(agent, "base_url", "") or ""))):
+        return api_kwargs
+    extra_body = api_kwargs.get("extra_body")
+    extra_body = dict(extra_body) if isinstance(extra_body, dict) else {}
+    template_kwargs = extra_body.get("chat_template_kwargs")
+    extra_body["chat_template_kwargs"] = {
+        **(template_kwargs if isinstance(template_kwargs, dict) else {}), "enable_thinking": False,
+    }
+    api_kwargs["extra_body"] = extra_body
+    return api_kwargs
+
+
 def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
     transport = agent._get_transport()
     tools_for_api = _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api)
@@ -1467,10 +1492,10 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         qwen_session_metadata=_qwen_meta)
     if _profile:
         # Profiles handle per-provider quirks via hooks fed the context above.
-        return transport.build_kwargs(provider_profile=_profile, **_common)
+        return _template_thinking_off(agent, transport.build_kwargs(provider_profile=_profile, **_common))
 
     # Legacy flag path: only for a provider absent from the providers/ registry.
-    return transport.build_kwargs(
+    return _template_thinking_off(agent, transport.build_kwargs(
         **_common,
         model_lower=(agent.model or "").lower(),
         is_openrouter=_is_or,
@@ -1478,7 +1503,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         is_tokenhub=base_url_host_matches(_host, "tokenhub.tencentmaas.com"),
         profile_endpoint=_profile_endpoint, endpoint_reasoning=agent._endpoint_reasoning_payload() if _profile_endpoint else None,
         provider_name=agent.provider,
-    )
+    ))
 
 
 def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
@@ -3035,6 +3060,10 @@ class _StreamingCall(StreamingWaitMonitor):
         runaway = None
 
         llamacpp = _streams_llamacpp(self.agent)
+        # llama-server can report actual decode count and duration in its final SSE chunk.
+        # Clear the previous request so a provider without timings never inherits a stale rate.
+        self.agent._easy_decode_rate = None
+        self.agent._easy_decode_model = self.api_kwargs.get("model")
 
         def _open_stream(next_api_kwargs: dict[str, Any]):
             timeout = _httpx.Timeout(connect=conn_cap, read=read_timeout, write=base_timeout, pool=conn_cap)
@@ -3079,6 +3108,10 @@ class _StreamingCall(StreamingWaitMonitor):
                 continue
             if is_progress:
                 continue
+            from hermes_easy.model_status import decode_rate
+            rate = decode_rate(chunk)
+            if rate is not None:
+                self.agent._easy_decode_rate = rate
             model_name, response_id, upstream_provider = self._chunk_identity(
                 _diag, chunk, model_name, response_id, upstream_provider)
             if not chunk.choices:

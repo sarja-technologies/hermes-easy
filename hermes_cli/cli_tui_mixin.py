@@ -378,8 +378,9 @@ class CLITuiMixin:
         completions_menu) -> list:
         """Ordered children of the root ``HSplit``; override only for full control over ordering
         (wrappers normally override ``_get_extra_tui_widgets`` instead)."""
+        import hermes_easy
         ordered = [
-            Window(height=0),
+            Window(height=Dimension(min=0, preferred=0) if hermes_easy.active() else 0),
             sudo_widget,
             secret_widget,
             connection_widget,

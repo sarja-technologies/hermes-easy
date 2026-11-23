@@ -70,7 +70,7 @@ FIELDS: tuple[Field, ...] = (
           "Ctrl+O prints the full output of the latest tool call whatever is chosen here."),
     Field("status", "line", "Status line", "standard",
           (("standard", "Standard"), ("minimal", "Minimal"), ("full", "Full (upstream)"), ("off", "Off")),
-          "Standard: model, context use, directory. Minimal: model and context. "
+          "Standard: approvals, model and measured decode speed. Minimal: approvals and model. "
           "Full: every upstream counter."),
     Field("status", "key_hints", "Key hints", True, (),
           "Show the keys that work right now at the right of the status line."),
@@ -78,7 +78,7 @@ FIELDS: tuple[Field, ...] = (
           "A dim line after each turn: time taken and what the tools did."),
     Field("motion", "spinner", "Activity indicator", "dots",
           (("dots", "Dots"), ("line", "Line"), ("pulse", "Pulse"), ("static", "Static")),
-          "Shown on the composer rule while the agent works."),
+          "Shown above the composer while the agent works."),
     Field("motion", "reduced_motion", "Reduced motion", False, (),
           "No animated frames anywhere; the indicator becomes a static mark."),
 )

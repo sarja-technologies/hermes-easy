@@ -9,7 +9,8 @@ from hermes_easy.theme import RESET, hex_fg, palette
 
 KEYS = (
     ("enter", "send"), ("ctrl+j / alt+enter", "new line"), ("tab", "complete"),
-    ("ctrl+c", "interrupt / clear / exit"), ("ctrl+o", "full output of the last tool call"),
+    ("esc", "close a menu or interrupt a turn"), ("ctrl+c", "clear / interrupt; twice to exit"),
+    ("shift+tab", "approval modes when the composer is empty"), ("ctrl+o", "last tool details"),
     ("ctrl+p", "command palette"), ("ctrl+g", "edit the draft in $EDITOR"), ("@", "attach a file"),
     ("!", "run a shell command"),
 )

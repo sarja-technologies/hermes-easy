@@ -428,7 +428,12 @@ def _terminal_columns() -> int:
 def _terminal_width_for_streaming() -> int:
     """Display cells inside the streamed response box (small margin for resize races)."""
     from cli import _STREAM_PAD, _terminal_columns
-    return max(20, _terminal_columns() - len(_STREAM_PAD) - 2)
+    import hermes_easy
+    columns = _terminal_columns()
+    if hermes_easy.active():
+        from hermes_easy.composer import content_width
+        columns = content_width(columns)
+    return max(20, columns - len(_STREAM_PAD) - 2)
 
 
 def _render_final_assistant_content(text: str, mode: str = "render"):
@@ -437,7 +442,12 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     from rich.markdown import Markdown
 
     # 1 border cell each side + margin so resize races don't push a borderline table into soft-wrap.
-    panel_width = max(20, _terminal_columns() - 4)
+    import hermes_easy
+    columns = _terminal_columns()
+    if hermes_easy.active():
+        from hermes_easy.composer import content_width
+        columns = content_width(columns)
+    panel_width = max(20, columns - 4)
 
     normalized_mode = str(mode or "render").strip().lower()
     if normalized_mode == "strip":
@@ -760,16 +770,30 @@ def _cprint(text: str, *, raw: str = ""):
     recording = _output_history_recording()
     seq = next(_PAINT_SEQ)
 
+    def paint_text():
+        import hermes_easy
+        columns = _painted_columns() if hermes_easy.active() and not raw else None
+        if columns:
+            from hermes_easy.composer import content_width
+            from hermes_easy.scrollback import centre, strip_controls
+            plain = strip_controls(str(text)).lstrip("\n")
+            prose = plain.startswith(("› ", "● ", "! ")) or (
+                plain.startswith("  ") and not plain.startswith("    "))
+            return centre(str(text), columns, content_width(columns), hanging=2 if prose else 0, prose=prose)
+        return text
+
     def _painted(paint):
         # Recorded when painted, not when requested: a redraw replaying the history must
         # neither print rows still queued for the loop nor size them at a stale width.
         def _paint():
+            painted = paint_text()
             if recording:
-                _record_output_history(text, force=True)
-            paint()
+                _record_output_history(painted, force=True)
+            paint(painted)
+            return painted
         return _paint
-    paint_pt = _painted(lambda: _pt_print(_ansi_with_raw(text, raw)))
-    paint_fallback = _painted(lambda: _pt_print_ansi(text, raw))
+    paint_pt = _painted(lambda value: _pt_print(_ansi_with_raw(value, raw)))
+    paint_fallback = _painted(lambda value: _pt_print_ansi(value, raw))
 
     try:
         from prompt_toolkit.application import get_app_or_none, run_in_terminal
@@ -806,11 +830,11 @@ def _cprint(text: str, *, raw: str = ""):
             paint_pt()
         return
 
-    def _print_now():
+    def _print_now(painted):
         from prompt_toolkit.formatted_text import to_formatted_text
         from prompt_toolkit.renderer import print_formatted_text as _paint_formatted_text
         from prompt_toolkit.styles import Style
-        _paint_formatted_text(app.output, to_formatted_text(_ansi_with_raw(text, raw)) + [("", "\n")], Style([]))
+        _paint_formatted_text(app.output, to_formatted_text(_ansi_with_raw(painted, raw)) + [("", "\n")], Style([]))
     paint_now = _painted(_print_now)
 
     def _schedule():
@@ -838,9 +862,9 @@ def _cprint(text: str, *, raw: str = ""):
                 floor = max(floor, renderer._min_available_height, screen.height if screen else 0)
             columns = app.output.get_size().columns
             renderer.erase()
-            paint_now()
+            painted = paint_now()
             renderer.reset()
-            printed = sum(_line_rows(line, columns) for line in text.split("\n"))
+            printed = sum(_line_rows(line, columns) for line in painted.split("\n"))
             if app.output.get_size().columns != columns:
                 _add_suspect_rows(printed)
             if floor is not None:
@@ -903,14 +927,19 @@ class ChatConsole:
         self._buffer = StringIO()
         self._inner = Console(file=self._buffer, force_terminal=True, color_system="truecolor", highlight=False)
 
-    def print(self, *args, **kwargs):
+    def print(self, *args, marker: str = "", **kwargs):
         from cli import _OSC_ESCAPE_RE, _cprint
         self._buffer.seek(0)
         self._buffer.truncate()
-        self._inner.width = shutil.get_terminal_size((80, 24)).columns
+        columns = _painted_columns() or shutil.get_terminal_size((80, 24)).columns
+        import hermes_easy
+        if hermes_easy.active():
+            from hermes_easy.composer import content_width
+            columns = max(1, content_width(columns) - (2 if marker else 0))
+        self._inner.width = columns
         self._inner.print(*args, **kwargs)
-        for line in _OSC_ESCAPE_RE.sub("", self._buffer.getvalue()).rstrip("\n").split("\n"):
-            _cprint(line)
+        for index, line in enumerate(_OSC_ESCAPE_RE.sub("", self._buffer.getvalue()).rstrip("\n").split("\n")):
+            _cprint((marker + " " if not index else "  ") + line if marker else line)
 
     @contextmanager
     def status(self, *_args, **_kwargs):

@@ -310,6 +310,7 @@ class GatewayAgent:
         written; with no prompt the refusal raises. Any refusal raises: main's callers roll their
         own fields back."""
         if once or restore:
+            self._easy_decode_rate = self._easy_decode_model = None
             # ``alias``: the ``model_aliases`` entry a ``--once`` pick resolved through (``_route_off_session``).
             self._turn_route = None if restore else self._route_off_session(new_model, new_provider, alias)
             if restore:
@@ -351,6 +352,7 @@ class GatewayAgent:
                       **({"provider": provider} if provider else {})}
         # The session now runs this route, so a leftover one-turn override must not ride the next submit.
         self._turn_route = None
+        self._easy_decode_rate = self._easy_decode_model = None
         self._apply_info(state.info)
         return True
 
@@ -518,6 +520,9 @@ class GatewayAgent:
         if isinstance(usage.get("context_tokens"), int):
             self._context_tokens = usage["context_tokens"]
             self._anchor_display()
+        if "decode_tokens_per_s" in usage:
+            self._easy_decode_rate = usage["decode_tokens_per_s"]
+            self._easy_decode_model = usage.get("decode_model")
         latency, tps = usage.get("avg_latency_s"), usage.get("tokens_per_s")
         if isinstance(latency, (int, float)) and latency > 0 and isinstance(tps, (int, float)):
             # The bar averages these deques (mean latency, sum/sum velocity): one aligned sample each.

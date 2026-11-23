@@ -41,6 +41,7 @@ class FailoverReason(enum.Enum):
     upstream_rate_limit = "upstream_rate_limit"  # Aggregator's upstream model 429 — fallback model, key is healthy
     upstream_blocked = "upstream_blocked"  # 403 from a WAF/CDN/proxy in front of the provider — key is healthy, fallback
     overloaded = "overloaded"            # 503/529 — provider overloaded, backoff
+    resource_exhausted = "resource_exhausted"  # a local backend refused for lack of memory: no automatic retry, no fallback, manual /retry later
     server_error = "server_error"        # 500/502 — internal server error, retry
     timeout = "timeout"                  # Connection/read timeout — rebuild client + retry
     ssl_cert_verification = "ssl_cert_verification"  # Deterministic TLS chain failure — fail fast with guidance
@@ -827,6 +828,19 @@ class _Ctx:
         )
 
 
+# A local backend (the Yaob bridge) refused the request because the machine behind it is short of memory. Resending the
+# same request cannot help until something else frees memory, so it is not retried, not compressed and never handed to
+# another provider; the user's message stays in the session and /retry sends it again when memory is available.
+_RESOURCE_REFUSAL_CODES = frozenset({"insufficient_memory"})
+
+
+def _resource_refusal(c: _Ctx) -> Optional[Verdict]:
+    if c.code in _RESOURCE_REFUSAL_CODES:
+        return _v(_R.resource_exhausted, retryable=False, should_compress=False, should_rotate_credential=False,
+                  should_fallback=False, error_context={"resource_refusal": True})
+    return None
+
+
 def _plugin_verdict(c: _Ctx) -> Optional[Verdict]:
     """First valid plugin classification (runs before the built-in pipeline so a
     provider plugin can add or correct verdicts). invoke_hook isolates callback
@@ -1128,7 +1142,7 @@ def _by_status(c: _Ctx) -> Optional[Verdict]:
 # HTTP status → MoA shapes → structured error code → message patterns → SSL → disconnect +
 # large session → transport types → unknown (retryable with backoff).
 _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
-    _plugin_verdict, _profile_verdict, _provider_special_cases, _by_status, _moa_special_cases,
+    _resource_refusal, _plugin_verdict, _profile_verdict, _provider_special_cases, _by_status, _moa_special_cases,
     _by_error_code, _by_message, _by_transport,
 )
 

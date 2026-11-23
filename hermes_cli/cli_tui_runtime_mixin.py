@@ -197,6 +197,16 @@ class CLITuiRuntimeMixin:
         self._tool_start_time = 0.0
         self._pending_tool_info.clear()
         self.__dict__.pop("_running_tool_labels", None)
+        # Always clear streaming/cancel state so stale indicators never survive an interrupt or error.
+        self._stream_buf = ""
+        self._stream_box_live = False
+        self._reasoning_box_opened = False
+        self._easy_cancel_requested = False
+        self._easy_cancel_in_flight = False
+        self._easy_cancel_requested_at = 0.0
+        self._easy_exit_hint_until = 0
+        if getattr(self, "_last_turn_interrupted", False):
+            self._easy_cancel_grace_until = time.monotonic() + 1.0
         self._pet_react_turn_end()
         self._turn_summary_emit()
         self._interactive_turn = False
@@ -245,44 +255,74 @@ class CLITuiRuntimeMixin:
     def _tui_signal_handler(self, signum, frame):
         """SIGHUP/SIGTERM -> graceful shutdown; a gateway viewer only disconnects (the session lives on).
 
-        The agent is hard-interrupted first so its daemon thread can kill the tool's
-        setsid subprocess group before the main thread unwinds (else an orphan child).
-        ``logger.debug`` is guarded: logging is not reentrant-safe and a shutdown race
-        can raise ``KeyError`` inside the handler, bypassing prompt_toolkit's unwind.
+        Re-entrancy-safe and non-blocking: duplicate signals during shutdown are ignored,
+        and agent interruption never sleeps inside the signal handler.
         """
         from cli import _arm_exit_watchdog_on_shutdown_signal, _interrupt_agent_for_signal
+        if getattr(self, "_tui_shutdown_signal_handled", False):
+            return
+        self._tui_shutdown_signal_handled = True
         with suppress(Exception):
             logger.debug("Received signal %s, triggering graceful shutdown", signum)
-        # Arm the backstop IMMEDIATELY: if the unwind wedges, _run_cleanup never arms its own.
-        # Shutdown intent is now unambiguous — arm the exit backstop IMMEDIATELY, before the graceful unwind
-        # below. If any step of that unwind wedges (main thread parked in a syscall, prompt_toolkit teardown
-        # never returning), _run_cleanup never runs and would never arm its own watchdog — leaving a "dead"
-        # CLI alive for minutes (#65998 class).
-        # Arm the exit backstop now that shutdown intent is unambiguous — covers wedges in the unwind below
-        # that would otherwise leave the process alive with no watchdog (#65998 class).
         _arm_exit_watchdog_on_shutdown_signal()
         from hermes_cli.cli_shutdown import _is_gateway_viewer
         if _is_gateway_viewer(self):
-            # A lost terminal (SIGHUP, or the emulator's SIGTERM) is a disconnect, not /exit: the
-            # gateway keeps the turn and its background subagents, as for a dropped socket. A signal
-            # landing after /exit or Ctrl+D already asked to close keeps that close (and --delete).
             if not self._should_exit:
                 self._viewer_disconnected = self._detach_on_exit = True
         elif self._agent_running:
             _interrupt_agent_for_signal(self.agent, signum)
-        # Prefer app.exit() over raising KeyboardInterrupt: a KBI from a signal handler
-        # lands in a pt Task ("Unhandled exception in event loop" + "Press ENTER to
-        # continue..."); call_soon_threadsafe lets the loop unwind normally.
         try:
             from prompt_toolkit.application.current import get_app_or_none
-            _app = get_app_or_none()
+            _app = get_app_or_none() or getattr(self, "_app", None)
             _loop = getattr(_app, "loop", None)
-            if _loop is not None:
+            if _loop is not None and not _loop.is_closed():
                 _loop.call_soon_threadsafe(_app.exit)
                 return  # clean unwind — no traceback, no ENTER pause
         except Exception:
             pass
         raise KeyboardInterrupt()  # fallback for non-prompt_toolkit contexts
+
+    def _tui_dispatch_sigint_on_loop(self):
+        """Handle a POSIX SIGINT on prompt_toolkit's asyncio loop identically to a Ctrl+C keystroke."""
+        app = getattr(self, "_app", None)
+        if app is None or not getattr(app, "is_running", False) or getattr(self, "_should_exit", False):
+            return
+        from types import SimpleNamespace
+        event = SimpleNamespace(app=app, current_buffer=app.current_buffer)
+        with suppress(Exception):
+            self._tui_handle_ctrl_c(event)
+
+    def _tui_sigint_handler(self, signum, frame):
+        """Re-entrancy-safe, non-blocking SIGINT handler for interactive TUI sessions.
+
+        Replaces ``_signal_handler_q`` on POSIX so a real SIGINT (during startup,
+        termios ISIG drift, tmux, or ``kill -INT``) never sleeps in a signal handler
+        or recurses into ``KeyboardInterrupt`` tracebacks.
+        """
+        if getattr(self, "_tui_sigint_in_progress", False):
+            return
+        self._tui_sigint_in_progress = True
+        try:
+            if getattr(self, "_should_exit", False):
+                # Already shutting down: let cleanup & terminal restoration complete cleanly.
+                return
+            app = getattr(self, "_app", None)
+            loop = getattr(app, "loop", None) if app is not None else None
+            if app is not None and getattr(app, "is_running", False) and loop is not None and not loop.is_closed():
+                try:
+                    loop.call_soon_threadsafe(self._tui_dispatch_sigint_on_loop)
+                    return
+                except Exception:
+                    pass
+            # Before app.run() enters raw mode (startup / gateway connect) or outside an event loop:
+            # unwind cleanly once without blocking.
+            self._should_exit = True
+            if getattr(self, "_agent_running", False) and getattr(self, "agent", None) is not None:
+                from cli import _interrupt_agent_for_signal
+                _interrupt_agent_for_signal(self.agent, signum)
+            raise KeyboardInterrupt()
+        finally:
+            self._tui_sigint_in_progress = False
 
     def _tui_print_startup(self):
         """Startup output: light-mode probe, banner, advisories, resume/welcome lines, tips."""
@@ -293,11 +333,16 @@ class CLITuiRuntimeMixin:
         _show_vscode_images_hint = False
         with suppress(Exception):  # VS Code image probe: same pre-pt window, cached, ~10 ms
             _show_vscode_images_hint = vscode_images_hint(self._inline_images_mode)
-        # Scroll the cursor to the last row so banner, responses and prompt pin to the bottom.
-        with suppress(Exception):
-            _term_lines = shutil.get_terminal_size().lines
-            if _term_lines > 2:
-                print("\n" * (_term_lines - 1), end="", flush=True)
+        import hermes_easy
+        from hermes_easy.viewport import begin_startup, finish_startup
+
+        viewport = begin_startup() if hermes_easy.active() else None
+        if viewport is None:
+            # The classic view starts with its banner and composer at the bottom.
+            with suppress(Exception):
+                _term_lines = shutil.get_terminal_size().lines
+                if _term_lines > 2:
+                    print("\n" * (_term_lines - 1), end="", flush=True)
 
         from hermes_cli.gateway_client import GatewayClientError
         from hermes_cli.gateway_owner_restart import SuccessorWaitStopped
@@ -368,9 +413,10 @@ class CLITuiRuntimeMixin:
             self._console_print(
                 f"[bold {_accent_hex()}]{t('cli.tui.activated_skills_label')}[/] {', '.join(_skills_for_line)}")
             self._startup_skills_line_shown = True
-        import hermes_easy
         if not hermes_easy.active():  # hermes-easy spaces its own blocks
             self._console_print()
+        if viewport is not None:
+            finish_startup(viewport)
 
     def _tui_startup_prewarm_and_warnings(self, _welcome_skin):
         """Idle-window prewarms (picker cache, agent runtime imports) plus the redaction-off and OpenClaw-residue banners."""
@@ -459,7 +505,7 @@ class CLITuiRuntimeMixin:
             # Vi editing mode when display.vim_mode is on.
             # EMACS is prompt_toolkit's own default, so non-opted-in behaviour is unchanged.
             extra_kw["editing_mode"] = EditingMode.VI if self._vim_mode else EditingMode.EMACS
-        return Application(
+        app = Application(
             layout=layout,
             key_bindings=kb,
             style=style,
@@ -477,20 +523,32 @@ class CLITuiRuntimeMixin:
             erase_when_done=True,
             **extra_kw,
         )
+        import hermes_easy
+        if hermes_easy.active():
+            from hermes_easy.viewport import preserve_tmux_scrollback
+
+            preserve_tmux_scrollback(app.output)
+        return app
 
     def _tui_install_signal_handlers(self):
-        """SIGTERM/SIGHUP -> graceful shutdown; Windows absorbs SIGINT (see body)."""
+        """SIGTERM/SIGHUP -> graceful shutdown; POSIX SIGINT -> non-blocking TUI interrupt; Windows absorbs SIGINT."""
         try:
             import signal as _signal
+            self._tui_shutdown_signal_handled = False
+            self._tui_sigint_in_progress = False
             _signal.signal(_signal.SIGTERM, self._tui_signal_handler)
             if hasattr(_signal, 'SIGHUP'):
                 _signal.signal(_signal.SIGHUP, self._tui_signal_handler)
 
-            # Windows: absorb SIGINT. Win32 delivers spurious CTRL_C_EVENT when children spawn
-            # from background threads, which would unwind app.run() mid-turn. Real Ctrl+C is
-            # bound by prompt_toolkit. Never call agent.interrupt() here (fake user message).
             if sys.platform == "win32":
+                # Windows: absorb SIGINT. Win32 delivers spurious CTRL_C_EVENT when children spawn
+                # from background threads, which would unwind app.run() mid-turn. Real Ctrl+C is
+                # bound by prompt_toolkit. Never call agent.interrupt() here (fake user message).
                 _signal.signal(_signal.SIGINT, lambda signum, frame: None)
+            else:
+                # POSIX: replace any single-query SIGINT handler with the re-entrancy-safe,
+                # non-blocking TUI handler so real SIGINT never sleeps or recurses.
+                _signal.signal(_signal.SIGINT, self._tui_sigint_handler)
         except Exception:
             pass  # restricted environments
 

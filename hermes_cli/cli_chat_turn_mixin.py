@@ -65,6 +65,9 @@ class CLIChatTurnMixin:
         # Reset per turn; only a real interrupt flips it, so early returns leave it False.
         self._last_turn_interrupted = False
         self._last_turn_failed = False
+        self._easy_cancel_requested = False
+        self._easy_cancel_in_flight = False
+        self._easy_cancel_requested_at = 0.0
 
         if not self._ensure_runtime_credentials():
             return None
@@ -84,6 +87,9 @@ class CLIChatTurnMixin:
         finally:
             if initializing and getattr(self, "_spinner_text", "") == initializing:
                 self._spinner_text = ""
+        if getattr(self, "_easy_cancel_requested", False):
+            self._last_turn_interrupted = True
+            return None
         agent = self.agent
         if agent is None:
             return None
@@ -425,7 +431,22 @@ class CLIChatTurnMixin:
                 turn.thinking_started = False
 
         interrupt_msg = None
+        _cancel_deadline = None
         while agent_thread.is_alive():
+            if self._should_exit:
+                break
+            if getattr(self, "_easy_cancel_requested", False):
+                if _cancel_deadline is None:
+                    # Bound wait if cancellation hits a dead network/gateway socket so the composer
+                    # always recovers instead of hanging forever.
+                    _cancel_deadline = time.monotonic() + 12.0
+                elif time.monotonic() >= _cancel_deadline:
+                    logger.warning(
+                        "Agent thread still alive 12s after Ctrl+C cancellation (thread %s); "
+                        "returning to composer.",
+                        agent_thread.ident,
+                    )
+                    break
             try:
                 interrupt_msg = self._interrupt_queue.get(timeout=0.1)
             except queue.Empty:
@@ -470,6 +491,9 @@ class CLIChatTurnMixin:
                     "on exit.",
                     agent_thread.ident,
                 )
+        elif getattr(self, "_easy_cancel_requested", False):
+            # Bounded-wait break after Ctrl+C/Esc cancellation: don't block 30s on a wedged thread.
+            agent_thread.join(timeout=0.5)
         else:
             agent_thread.join(timeout=30)  # should be done already; guard edge cases
         return interrupt_msg
@@ -751,8 +775,13 @@ class CLIChatTurnMixin:
             elif modern:
                 from hermes_cli.cli_modern_layout import answer_label, closing_separator
                 _cprint(answer_label())
+                import hermes_easy
+                marker = ""
+                if hermes_easy.active():
+                    from hermes_easy.layout import error_line
+                    marker = error_line("").rstrip() if is_error_response else "●"
                 ChatConsole().print(_render_final_assistant_content(response, mode=mode),
-                                    style=_resp_text, soft_wrap=True)  # terminal wraps; resize re-flows
+                                    style=_resp_text, soft_wrap=True, marker=marker)
                 _cprint(closing_separator(True))
             else:
                 ChatConsole().print(Panel(

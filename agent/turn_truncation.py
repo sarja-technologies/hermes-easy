@@ -24,6 +24,7 @@ from agent.turn_failure_copy import content_policy_copy, provider_label_for, sit
 from agent.turn_retry_state import TurnRetryState
 from agent.usage_pricing import normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
+from utils import env_int
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -223,6 +224,7 @@ class _Trunc(TruncationVerdict):
     action: str = "fallthrough"
     result: Optional[dict[str, Any]] = None
     window_filled: Optional[tuple[int, int]] = None  # (prompt_tokens, context_length)
+    api_kwargs: Any = None  # the request that was just truncated
 
     def done(self, action: str, result: Optional[dict[str, Any]] = None) -> TruncationVerdict:
         self.action, self.result = action, result
@@ -326,6 +328,7 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         # Thinking-only truncation: continuing with thinking ON re-burns the budget.
         agent._ephemeral_reasoning_off = True
     if _interim_content:
+        reset_reasoning_only_ladder(agent)  # this turn wrote text: the reasoning-only chain is over
         interim_msg = agent._build_assistant_message(assistant_message, st.finish_reason)
         interim_msg["_length_continuation_fragment"] = True  # ceiling exit drops these
         append_message(messages, interim_msg)
@@ -375,6 +378,142 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     return st.end_turn(
         partial_response or _CEILING_NO_TEXT,
         "Response remained truncated after 4 continuation attempts",
+    )
+
+
+# --- reasoning-only truncation ladder -------------------------------------------------------------
+# A reasoning model can spend the whole output budget on reasoning and finish with
+# ``finish_reason="length"`` and no visible text. Repeating the same request re-burns the budget
+# (minutes per attempt on a local model), so the turn escalates a bounded number of times:
+#   1. reasoning off for one request and a larger output cap (what the provider honours),
+#   2. the same plus a request-only system nudge to stop deliberating and answer from the reasoning so far,
+# then ends with one message naming what was tried. The user's message stays in the session.
+_REASONING_ONLY_NUDGE = (
+    "[System: Your previous attempt used its entire output budget on internal reasoning and never "
+    "produced a visible answer. Stop deliberating. Answer now, directly, using the reasoning you have "
+    "already done; if something is still uncertain, give your best answer and say what is uncertain.]"
+)
+REASONING_RETRIES_ENV = "HERMES_REASONING_TRUNCATION_RETRIES"
+_DEFAULT_REASONING_RETRIES = 2
+_CAP_HEADROOM = 256  # tokens kept free below the context window when raising the output cap
+
+
+def reasoning_retry_limit() -> int:
+    """Extra attempts after a reasoning-only truncation (``HERMES_REASONING_TRUNCATION_RETRIES``, default 2, max 4)."""
+    return max(0, min(env_int(REASONING_RETRIES_ENV, _DEFAULT_REASONING_RETRIES), 4))
+
+
+def reset_reasoning_only_ladder(agent: Any) -> None:
+    """Forget the ladder's progress (turn start, a turn that produced text, the final stop)."""
+    agent._len_reasoning_streak = 0
+    agent._len_reasoning_tried = []
+    agent._len_reasoning_last_call = -1
+    agent._length_escalation = None
+    agent._request_only_nudge = None
+
+
+def _reasoning_text_of(agent: Any, message: Any, content: Any) -> str:
+    """The reasoning a response carried (structured field, else inline think blocks); never shown to the user."""
+    text: Any = ""
+    with suppress(Exception):
+        text = agent._extract_reasoning(message) or ""
+    if not (isinstance(text, str) and text.strip()) and isinstance(content, str) and _THINK_TAG_RE.search(content):
+        text = content
+    return text.strip() if isinstance(text, str) else ""
+
+
+def _escalated_output_cap(st: _Trunc) -> Optional[int]:
+    """A larger output cap for the next attempt, or ``None`` when none can honestly be offered.
+
+    Sized from what the request really allowed (the cap it carried, else the tokens the server
+    produced before cutting it off) and held below the context window; never a cap at or under
+    what just failed, and never a guess when neither number is known (a made-up 8K could LOWER a
+    server's own default)."""
+    agent = st.agent
+    requested = agent._requested_output_cap_from_api_kwargs(st.api_kwargs)
+    usage = getattr(st.response, "usage", None)
+    observed = prompt = 0
+    if usage:
+        with suppress(Exception):
+            canonical = normalize_usage(usage, provider=agent.provider, api_mode=agent.api_mode)
+            observed, prompt = int(canonical.output_tokens or 0), int(canonical.prompt_tokens or 0)
+    if not (requested or observed):
+        return None
+    configured = agent.max_tokens if isinstance(agent.max_tokens, int) else 0
+    base = max(requested or 0, configured, observed, 4096)
+    cap = boosted_output_cap(agent, requested, 1, base=base)
+    ctx = int(getattr(getattr(agent, "context_compressor", None), "context_length", 0) or 0)
+    if ctx and prompt:
+        cap = min(cap, ctx - prompt - _CAP_HEADROOM)
+    return cap if cap > max(requested or 0, observed) else None
+
+
+def _escalate_reasoning_only(
+    st: _Trunc, _retry: TurnRetryState, message: Any, content: Any,
+) -> Optional[TruncationVerdict]:
+    """Handle a length truncation that carried reasoning but no visible text; ``None`` for any other
+    truncation (visible text, no reasoning at all), which keeps the ordinary continuation path."""
+    agent = st.agent
+    visible = agent._strip_think_blocks(content).strip() if isinstance(content, str) else ""
+    if visible or not _reasoning_text_of(agent, message, content):
+        return None
+
+    last_call, streak = getattr(agent, "_len_reasoning_last_call", -1), getattr(agent, "_len_reasoning_streak", 0)
+    consecutive = isinstance(last_call, int) and isinstance(streak, int) and 0 <= st.api_call_count - last_call <= 1
+    streak = streak + 1 if consecutive else 1
+    agent._len_reasoning_streak, agent._len_reasoning_last_call = streak, st.api_call_count
+    tried = getattr(agent, "_len_reasoning_tried", None)
+    tried = list(tried) if consecutive and isinstance(tried, list) else []
+
+    if streak <= reasoning_retry_limit():
+        steps = ["reasoning switched off"]
+        agent._ephemeral_reasoning_off = True
+        cap = _escalated_output_cap(st)
+        agent._length_escalation = {"cap": cap}
+        if cap:
+            steps.append(f"output limit raised to {cap:,} tokens")
+        if streak >= 2:
+            # Request-only (see assemble_api_request): a stored row next to the unanswered user turn
+            # would be merged into it by the sequence repair and persisted as a doubled message.
+            agent._request_only_nudge = _REASONING_ONLY_NUDGE
+            steps.append("told to answer now instead of deliberating")
+        tried.append(", ".join(steps))
+        agent._len_reasoning_tried = tried
+        agent._session_messages = st.messages
+        agent._vprint(
+            f"{agent.log_prefix}↻ Reasoning used the whole output budget with no answer — retrying: {tried[-1]} "
+            f"({streak}/{reasoning_retry_limit()})...", force=True, diagnostic=True,
+        )
+        with suppress(Exception):
+            agent._emit_diagnostic_wait(f"↻ model reasoned without answering — retrying with {tried[-1]}")
+        _retry.restart_with_length_continuation = True
+        return st.done("break")
+
+    # Out of attempts: one message, the user's own message stays in the session for /retry.
+    partial = collapse_continuation_trail(
+        agent, st.messages, st.current_turn_user_idx, finish_reason="length", parts=st.truncated_response_parts,
+    )
+    agent._ephemeral_reasoning_off = False
+    reset_reasoning_only_ladder(agent)
+    attempts = streak
+    agent._vprint(
+        f"{agent.log_prefix}⚠️  Reasoning used the whole output budget on all {attempts} attempt(s) — no answer produced.",
+        force=True, diagnostic=True,
+    )
+    lines = ["1. First attempt: the output limit was reached while the model was still reasoning"]
+    lines += [f"{i}. Retry {i - 1}: {step}" for i, step in enumerate(tried, start=2)]
+    notice = (
+        f"⚠️ **No answer was produced.** The model spent its whole output budget on reasoning in all "
+        f"{attempts} attempt{'s' if attempts != 1 else ''} and never wrote a reply.\n\n"
+        + "\n".join(lines)
+        + "\n\nYour message is still in this session. Change one of these, then send `/retry`:\n"
+        "→ `/reasoning none` (or `/reasoning low`) so it answers without long reasoning\n"
+        "→ raise the output-token limit on the model server\n"
+        "→ or switch model with `/model`"
+    )
+    return st.end_turn(
+        f"{partial}\n\n{notice}" if partial else notice,
+        f"Reasoning used the whole output budget on {attempts} attempt(s) with no visible answer",
     )
 
 
@@ -471,7 +610,7 @@ def recover_from_truncation(
         messages=messages, length_continue_retries=length_continue_retries,
         truncated_response_parts=truncated_response_parts,
         truncated_tool_call_retries=truncated_tool_call_retries, retry_count=retry_count,
-        compression_attempts=compression_attempts,
+        compression_attempts=compression_attempts, api_kwargs=api_kwargs,
     )
     if getattr(response, "_runaway_repetition", False):
         # The streaming call cut a live repetition loop: a continuation would only re-enter it,
@@ -523,6 +662,14 @@ def recover_from_truncation(
     _trunc_msg = normalize_response_for_agent(agent, response)
     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
     _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
+
+    if (
+        _trunc_msg is not None and not _trunc_has_tool_calls and not st.is_stub
+        and st.window_filled is None and agent.api_mode in _CONTINUABLE_MODES
+    ):
+        escalated = _escalate_reasoning_only(st, _retry, _trunc_msg, _trunc_content)
+        if escalated is not None:
+            return escalated
 
     abort = _abort_reason(agent, _trunc_content, _trunc_has_tool_calls)
     if abort is not None:

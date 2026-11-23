@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import logging
 import os
 import sys
+import threading
 import time
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
@@ -20,6 +21,12 @@ from typing import Any
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cli")
+
+# Re-entrancy and idempotency guards for signal-driven agent interrupts.
+# Signal handlers must NEVER block (no time.sleep, no synchronous RPC) and must
+# never recurse when rapid SIGINT/SIGTERM presses arrive.
+_signal_interrupt_in_progress = False
+_signal_interrupted_agent_ids: set[int] = set()
 
 if TYPE_CHECKING:
     from cli import HermesCLI
@@ -33,21 +40,55 @@ def _int_or(value, default: int) -> int:
         return default
 
 
-def _interrupt_agent_for_signal(agent, signum) -> None:
-    """Hard-interrupt ``agent`` for a shutdown signal, then sleep ``HERMES_SIGTERM_GRACE`` (1.5 s).
+def _reset_signal_interrupt_state() -> None:
+    """Reset module-level signal interrupt guards (used between turns / in tests)."""
+    global _signal_interrupt_in_progress
+    _signal_interrupt_in_progress = False
+    _signal_interrupted_agent_ids.clear()
 
-    The grace lets the agent thread kill the tool's setsid subprocess group before the
-    main thread unwinds (else an orphan child). Never raises.
-    """
-    from cli import _float_env
+
+def _is_blocking_remote_agent(agent) -> bool:
+    """True when ``agent.interrupt()`` performs network/IPC I/O that could block a signal handler."""
     try:
-        if agent is not None:
-            request_hard_interrupt(agent, f"received signal {signum}")
-            _grace = _float_env("HERMES_SIGTERM_GRACE", 1.5)
-            if _grace > 0:
-                time.sleep(_grace)
+        from hermes_cli.gateway_agent import GatewayAgent
+        return isinstance(agent, GatewayAgent)
     except Exception:
-        pass  # never block signal handling
+        return False
+
+
+def _interrupt_agent_for_signal(agent, signum) -> None:
+    """Non-blocking, re-entrancy-safe, idempotent hard-interrupt for shutdown signals.
+
+    Never calls ``time.sleep()`` inside a signal handler (blocking inside a signal
+    handler lets rapid SIGINT presses re-enter recursively and blow the stack with
+    nested ``KeyboardInterrupt`` frames). For gateway-backed agents whose
+    ``interrupt()`` performs socket RPC, dispatches the RPC on a daemon thread so
+    the signal handler returns immediately. Never raises.
+    """
+    global _signal_interrupt_in_progress
+    if agent is None or _signal_interrupt_in_progress:
+        return
+    agent_id = id(agent)
+    if agent_id in _signal_interrupted_agent_ids:
+        return
+    _signal_interrupt_in_progress = True
+    try:
+        _signal_interrupted_agent_ids.add(agent_id)
+        with suppress(Exception):
+            if hasattr(agent, "_interrupt_requested"):
+                agent._interrupt_requested = True
+        reason = f"received signal {signum}"
+        if _is_blocking_remote_agent(agent):
+            def _dispatch():
+                with suppress(Exception):
+                    request_hard_interrupt(agent, reason)
+            threading.Thread(target=_dispatch, name="signal-agent-interrupt", daemon=True).start()
+        else:
+            request_hard_interrupt(agent, reason)
+    except BaseException:
+        pass  # never block or leak exceptions from signal handling
+    finally:
+        _signal_interrupt_in_progress = False
 
 
 def _run_kanban_goal_loop_q(cli: HermesCLI, first_response: str, run_turn=None, log=None) -> None:
@@ -402,53 +443,60 @@ def _collect_kanban_task_images(single_query_images):
 def _install_single_query_signal_handlers(cli):
     """Route SIGINT/SIGTERM/SIGHUP through agent.interrupt() before unwinding; kanban workers hard-exit.
 
-    A plain KeyboardInterrupt only unwinds the main thread, so tool worker threads
-    would orphan the setsid child; the interrupt + grace window lets them kill it.
+    Re-entrancy-safe and non-blocking: repeated rapid signals never recurse inside
+    the handler or stack nested KeyboardInterrupt tracebacks.
     """
     from cli import _arm_exit_watchdog_on_shutdown_signal, _flush_logging_and_stdio, _flush_one_shot_session_store, _interrupt_agent_for_signal
     import signal as _signal
 
-    def _kill_foreground_and_exit(*_):
+    _state = {"handling": False, "count": 0}
+
+    def _kill_foreground_and_exit(exit_code: int = 0, *_):
         # The worker's command runs in its own process group: SIGKILL it or it outlives os._exit.
         with suppress(Exception):
             from tools.environments.base import kill_live_foreground_processes
             kill_live_foreground_processes(now=True)
-        os._exit(0)
+        os._exit(exit_code)
+
+    def _mask_shutdown_signals():
+        for _name in ("SIGINT", "SIGTERM", "SIGHUP"):
+            if hasattr(_signal, _name):
+                with suppress(Exception):
+                    _signal.signal(getattr(_signal, _name), _signal.SIG_IGN)
 
     def _signal_handler_q(signum, frame):
-        logger.debug("Received signal %s in single-query mode", signum)
+        _state["count"] += 1
+        if _state["handling"]:
+            # Already unwinding from an earlier signal: never re-enter or recurse.
+            # If the user presses Ctrl+C repeatedly (>=3) on a wedged unwind, exit cleanly.
+            if _state["count"] >= 3:
+                _mask_shutdown_signals()
+                _flush_logging_and_stdio()
+                _kill_foreground_and_exit(130 if signum == _signal.SIGINT else 128 + signum)
+            return
+        _state["handling"] = True
+        with suppress(Exception):
+            logger.debug("Received signal %s in single-query mode", signum)
         _arm_exit_watchdog_on_shutdown_signal()  # covers wedges in the unwind below
         _interrupt_agent_for_signal(getattr(cli, "agent", None), signum)
-        # Kanban: a non-daemon worker blocked in _wait_for_process survives KeyboardInterrupt
-        # and the dispatcher sees 'running' forever, so os._exit(0) (SIGALRM deadman guards
-        # a blocking flush). That skips atexit + the token-drain hook, hence the explicit flush.
         # Kanban worker exit path (#28181): SIGTERM hits a dispatcher-spawned worker that's likely in a
-        # non-daemon thread waiting on a child subprocess in _wait_for_process. Raising KeyboardInterrupt
-        # only unwinds the main thread; the worker thread keeps running, the process gets reparented to
-        # init, and the dispatcher's _pid_alive check returns True forever — task stuck in 'running'
-        # indefinitely. Skip the controlled-unwind dance and call os._exit(0) so the kernel reclaims the PID
-        # immediately and detect_crashed_workers can reclaim the stale claim on the next tick. Flush logging
-        # + stdout/stderr first so the final debug trace isn't lost; SIGALRM deadman guards the flush
-        # against any rare blocking-I/O case (the reporter measured flush in <1ms; the alarm is a failsafe,
-        # not the common path).
+        # non-daemon thread waiting on a child subprocess in _wait_for_process. Flush durably under a
+        # SIGALRM deadman, kill foreground child groups, and os._exit(0) so the PID is reclaimed promptly.
         if os.environ.get("HERMES_KANBAN_TASK"):
+            _mask_shutdown_signals()
             with suppress(Exception):
                 if hasattr(_signal, "SIGALRM"):
-                    _signal.signal(_signal.SIGALRM, _kill_foreground_and_exit)
+                    _signal.signal(_signal.SIGALRM, lambda *_: _kill_foreground_and_exit(0))
                     _signal.alarm(5)
             with suppress(Exception):
-                # Durable flush FIRST: memory-provider shutdown inside _run_cleanup can issue aux-LLM calls,
-                # and nothing after it may fail in a way that loses the turn (#88583).
-                # os._exit(0) skips atexit AND SessionDB's token-drain hook, so flush + finalize the session
-                # store here or the worker's turn (and its usage deltas) never become durable (#88583 /
-                # #50881 class). Best-effort under the SIGALRM deadman above.
                 _flush_one_shot_session_store(cli)
-            # The one-shot exit's shared_metrics shutdown_runtimes is skipped too: bounded inside the deadman.
-            from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
-            flush_before_hard_exit()
+            with suppress(Exception):
+                from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
+                flush_before_hard_exit()
             _flush_logging_and_stdio()
-            _kill_foreground_and_exit()
+            _kill_foreground_and_exit(0)
         raise KeyboardInterrupt()
+
     with suppress(Exception):  # restricted environments
         for _name in ("SIGINT", "SIGTERM", "SIGHUP"):
             if hasattr(_signal, _name):
@@ -551,7 +599,16 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
         # the run (recovery and goal follow-ups included) carries it to memory providers.
         from agent.turn_author import take_turn_author_from_env
         cli._single_query_turn_author = take_turn_author_from_env()
-        response = cli.chat(query, images=single_query_images or None)
+        try:
+            response = cli.chat(query, images=single_query_images or None)
+        except KeyboardInterrupt:
+            from cli import _emit_interrupted_session_end
+            _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
+            with suppress(Exception):
+                from tools.environments.base import kill_live_foreground_processes
+                kill_live_foreground_processes(now=True)
+            print("\nInterrupted.", file=sys.stderr, flush=True)
+            exit_single_query(130)
         # Kanban worker: a failed-silently turn used to end the run as rc=0 with no
         # terminal kanban call, so the dispatcher booked a protocol violation and
         # cold-restarted the task from scratch. Retry the authorised turn IN PLACE

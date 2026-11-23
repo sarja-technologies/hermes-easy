@@ -546,10 +546,18 @@ def apply_retry_restarts(
         return _verdict("continue")
 
     if _retry.restart_with_length_continuation:
-        # Boost the output budget per retry (shared ladder, see boosted_output_cap).
-        agent._ephemeral_max_output_tokens = boosted_output_cap(
-            agent, agent._requested_output_cap_from_api_kwargs(api_kwargs), length_continue_retries
-        )
+        # A reasoning-only truncation (turn_truncation._escalate_reasoning_only) hands over its own
+        # budget, sized from the tokens the server really produced and the room left in the window.
+        escalation = getattr(agent, "_length_escalation", None)
+        agent._length_escalation = None
+        if isinstance(escalation, dict):
+            if escalation.get("cap"):
+                agent._ephemeral_max_output_tokens = escalation["cap"]
+        else:
+            # Boost the output budget per retry (shared ladder, see boosted_output_cap).
+            agent._ephemeral_max_output_tokens = boosted_output_cap(
+                agent, agent._requested_output_cap_from_api_kwargs(api_kwargs), length_continue_retries
+            )
         return _verdict("continue")
 
     # All retries may exhaust with `response` still None; break out cleanly.

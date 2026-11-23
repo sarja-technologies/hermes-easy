@@ -54,7 +54,9 @@ def prepare_environment(environ: dict | None = None) -> Path:
     environ["HERMES_EASY_UI"] = "1"
     # prompt_toolkit picks its colour depth from TERM, so on a truecolor terminal the scrollback
     # rows were quantised to 256 colours (muted accents turn grey). COLORTERM is the real signal.
-    if environ.get("COLORTERM", "").lower() in {"truecolor", "24bit"}:
+    if "NO_COLOR" in environ:
+        environ["PROMPT_TOOLKIT_COLOR_DEPTH"] = "DEPTH_1_BIT"
+    elif environ.get("COLORTERM", "").lower() in {"truecolor", "24bit"}:
         environ.setdefault("PROMPT_TOOLKIT_COLOR_DEPTH", "DEPTH_24_BIT")
     shim = publish_hermes_shim(home)
     if shim is not None:
@@ -104,7 +106,8 @@ def seed_home(home: Path) -> None:
     from hermes_cli.config import atomic_config_write
     from hermes_cli.observability.shared_metrics_consent import OFFER_VERSION
     atomic_config_write(config_path, {
-        "display": {"interface": "cli", "cli_layout": "modern", "streaming": True},
+        "display": {"interface": "cli", "cli_layout": "modern", "streaming": True,
+                    "platforms": {"cli": {"show_reasoning": False}}},
         # The upstream first-run prompt asks this; hermes-easy starts with the "No thanks" answer.
         # `hermes-easy setup telemetry` changes it.
         "telemetry": {"shared_metrics": {"enabled": False, "send": False, "offer_version": OFFER_VERSION}},
@@ -221,6 +224,48 @@ def acp_main() -> None:
     acp()
 
 
+def _save_terminal_state():
+    """Snapshot POSIX termios attributes for stdin/tty so exit always restores echo & canonical mode."""
+    if os.name == "nt":
+        return None, None
+    try:
+        import termios
+        if sys.stdin is not None and sys.stdin.isatty():
+            fd = sys.stdin.fileno()
+            return fd, termios.tcgetattr(fd)
+    except Exception:
+        pass
+    return None, None
+
+
+def _restore_terminal_state(tty_fd, saved_termios) -> None:
+    """Best-effort restoration of termios, cursor visibility, and terminal input modes on any exit."""
+    if saved_termios is not None and tty_fd is not None and os.name != "nt":
+        try:
+            import termios
+            termios.tcsetattr(tty_fd, termios.TCSADRAIN, saved_termios)
+        except Exception:
+            pass
+    reset_seq = (
+        "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l"
+        "\x1b[?1004l\x1b[?2004l\x1b[?1049l\x1b[<u\x1b[>4m\x1b[0m\x1b[?25h"
+    )
+    try:
+        if sys.stdout is not None and sys.stdout.isatty():
+            sys.stdout.write(reset_seq)
+            sys.stdout.flush()
+            return
+    except Exception:
+        pass
+    try:
+        if saved_termios is not None:
+            with open("/dev/tty", "w", encoding="ascii") as tty:
+                tty.write(reset_seq)
+                tty.flush()
+    except Exception:
+        pass
+
+
 def main() -> None:
     home = prepare_environment()
     argv = sys.argv[1:]
@@ -233,5 +278,18 @@ def main() -> None:
         from hermes_easy import __version__
         print(f"hermes-easy {__version__} (on Hermes Agent by Nous Research)")
     seed_home(home)
+    tty_fd, saved_termios = _save_terminal_state()
     from hermes_cli.main import main as hermes_main
-    hermes_main()
+    try:
+        hermes_main()
+    except KeyboardInterrupt:
+        try:
+            import signal as _signal
+            _signal.signal(_signal.SIGINT, _signal.SIG_IGN)
+        except Exception:
+            pass
+        raise SystemExit(130) from None
+    finally:
+        _restore_terminal_state(tty_fd, saved_termios)
+        from hermes_easy.theme import restore_terminal_colors
+        restore_terminal_colors()

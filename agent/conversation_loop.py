@@ -1735,6 +1735,11 @@ def _run_conversation_turn(
     agent._last_persistence_error_cause = None
     agent._compression_adoption_failed = False
     agent._ephemeral_reasoning_off = False
+    agent._length_escalation = None
+    agent._request_only_nudge = None
+    agent._len_reasoning_streak = 0
+    agent._len_reasoning_tried = []
+    agent._len_reasoning_last_call = -1
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
 

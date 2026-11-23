@@ -1185,7 +1185,8 @@ def nonretryable_client_error_result(
     result = _failed_turn_result(_final_response, messages, api_call_count, _nonretryable_summary)
     result.update({
         "failure_reason": classified.reason.value,
-        "failure_retryable": bool(classified.retryable),
+        # A resource refusal is not auto-retried, but the user may retry by hand once memory is free.
+        "failure_retryable": bool(classified.retryable) or bool((classified.error_context or {}).get("resource_refusal")),
     })
     if _keep_partial:
         result["partial"] = True

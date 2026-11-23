@@ -73,23 +73,27 @@ speak ACP can launch `hermes-easy-acp`.
 
 ## What changed in the interface
 
-- One line at launch (name, version, model, directory) instead of the banner and inventory.
-  `/tools` and `/skills` still list everything.
-- Your messages start with `›`. Reasoning streams dim and ends with "Thought for Ns".
-- One row per tool call, with a mark for success or failure, its duration and the error when
-  there is one. Edits still show their diff. Paths inside the working directory are shown
+- A small launch header shows the version, model and working directory. Use `/tools` and
+  `/skills` to see the full inventory.
+- Prompts start with `›` and replies with `●`. Use `/reasoning` to change reasoning visibility.
+- Tool calls show a concise result. Edits show a diff, and paths inside the working directory appear
   relative to it.
 - A one-line summary after each turn: time, files edited, files read, commands run.
-- Fenced code in answers is indented without the fence markers, and keeps characters such as
-  `*` that the plain-text renderer used to strip.
-- The input has a single rule above it and a status line below it with the model, context use,
-  directory and the main keys.
-- The spinner has no faces or rotating verbs. `/help` is one aligned row per command.
+- Streamed code blocks use syntax colours for recognized languages and preserve whitespace
+  and literal characters when copied from the terminal.
+- The composer fills the terminal with a one-cell margin on either side and grows with the draft.
+  Use Alt+Enter or Ctrl+J to insert a line, and Up/Down to recall prompts. Slash completions appear
+  above the composer.
+- The footer shows the active model and approval mode. Decode speed appears when the provider
+  supplies decode timings. Shift+Tab on an empty composer opens the approval options.
+- A separate activity line shows model and tool progress only while relevant. Use Esc to cancel a
+  menu or interrupt a turn, and Ctrl+O to show the latest available tool details.
+- `/model` opens the active provider's model list. Use Left to browse providers and type to filter.
 - `/clear` redraws the launch line instead of the banner.
 
 ## UI settings
 
-`/ui-settings` opens a panel under the input. Changes apply as you make them, show in a preview
+`/ui-settings` opens a keyboard-driven settings panel. Changes apply as you make them, show in a preview
 inside the panel, and are saved to `~/.hermes-easy/ui.yaml` straight away.
 
 ![The /ui-settings panel with the Forest preset selected](assets/hermes-easy/ui-settings.png)

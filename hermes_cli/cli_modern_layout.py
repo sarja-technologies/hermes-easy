@@ -404,7 +404,7 @@ def modern_input_rules(cli, kb):
 
     top = Window(FormattedTextControl(lambda: _render_safely(top_rule_fragments, cli)),
                  height=lambda: cli._tui_input_rule_height("top"), wrap_lines=False)
-    bottom = Window(char="─", height=lambda: 0 if hermes_easy.active() else cli._tui_input_rule_height("bottom"),
+    bottom = Window(char="─", height=lambda: cli._tui_input_rule_height("bottom"),
                     style=rule_style)
 
     def _can_queue() -> bool:

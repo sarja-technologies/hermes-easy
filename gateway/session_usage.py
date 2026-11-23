@@ -87,6 +87,11 @@ def usage_stats(agent) -> dict:
             total = sum(latencies[-n:])
             avg_latency = _finite(total / n)
             tps = _finite(sum(outputs[-n:]) / total) if total > 0 else None
+    # Native decode timing is distinct from API latency (which includes prefill).
+    decode_rate = getattr(agent, "_easy_decode_rate", None)
+    stats["decode_tokens_per_s"] = _finite(decode_rate) if isinstance(decode_rate, (int, float)) else None
+    decode_model = getattr(agent, "_easy_decode_model", None)
+    stats["decode_model"] = decode_model if isinstance(decode_model, str) else None
     active = 0
     with contextlib.suppress(Exception):
         from tools.async_delegation import active_count

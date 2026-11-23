@@ -205,16 +205,24 @@ class CLITerminalMixin:
     def _recover_terminal_after_interrupt(self) -> None:
         """Recover the terminal after an interrupted agent turn (#33271): an in-flight
         ``CSI 6n`` reply arriving after the input parser tore down leaks as literal text
-        and can stall the VT100 parser mid-escape. Drain stdin, then full redraw; each step
-        self-guards. A dead PTY (EIO) skips the redraw (#81521 redraw storm). Never clear
-        output history here — the interruption marker is printed under
-        ``_suspend_output_history``, so replay already excludes it (#60920).
+        and can stall the VT100 parser mid-escape. Drain stdin, heal any termios drift,
+        ensure cursor visibility, then full redraw; each step self-guards.
         """
         if getattr(self, "_terminal_io_broken", False):
             return
         try:
             from hermes_cli.curses_ui import flush_stdin
             flush_stdin()
+        except Exception:
+            pass
+        try:
+            self._check_termios_drift()
+        except Exception:
+            pass
+        try:
+            app = getattr(self, "_app", None)
+            if app is not None and getattr(app, "output", None) is not None:
+                _write_terminal_sequence(app, "\x1b[0m\x1b[?25h")
         except Exception:
             pass
         self._force_full_redraw()

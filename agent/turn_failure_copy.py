@@ -262,6 +262,11 @@ _NONRETRYABLE_COPY: dict[str, str] = {
         "your key is probably fine. Set a custom User-Agent via the provider's extra_headers, check "
         "the proxy/WAF rules, or switch providers with /model."
     ),
+    FailoverReason.resource_exhausted.value: (
+        "{label} could not take this message right now: the machine running it is short of free memory, so it "
+        "was not retried automatically. Your message and the conversation are kept. Send /retry once memory is "
+        "free, or pick another model with /model."
+    ),
     FailoverReason.guardrail_blocked.value: (
         "{label}'s prompt-injection guardrail rejected this request before it reached any model, so "
         "the key is fine — a scanner judged the request payload (tool output is scanned too, not "
@@ -299,6 +304,7 @@ FAILURE_CAUSE_GLOSS: dict[str, str] = {
     FailoverReason.rate_limit.value: "the AI model service was rate-limited (too many requests)",
     FailoverReason.upstream_rate_limit.value: "the AI model service was rate-limited (too many requests)",
     FailoverReason.overloaded.value: "the AI model service is overloaded right now",
+    FailoverReason.resource_exhausted.value: "the machine running the AI model is short of free memory",
     FailoverReason.server_error.value: "the AI model service returned an internal error",
     FailoverReason.billing.value: "the AI model service says the account's usage or credit limit is reached",
     # Wire-level billing code (not a FailoverReason) that error_surface routes to the billing layer.

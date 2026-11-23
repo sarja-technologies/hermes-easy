@@ -247,6 +247,8 @@ class SessionStats(Result):
     compression_count: int
     avg_latency_s: float | None = None
     tokens_per_s: float | None = None
+    decode_tokens_per_s: float | None = None
+    decode_model: str | None = None
     last_turn_tokens: int
     rate_limit: dict[str, JsonValue] | None = None
     active_subagents: int

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import colorsys
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -173,6 +174,14 @@ def test_hidden_tool_output_prints_nothing_but_keeps_output_for_ctrl_o():
     assert any("hi" in r for r in rows)
 
 
+def test_compact_terminal_result_omits_empty_output_metadata():
+    from hermes_easy import layout
+    row = layout.tool_row(SimpleNamespace(), "terminal", {"command": "true"}, 0.1,
+                          '{"output": "", "exit_code": 0}')
+    assert "true" in row
+    assert "↳" not in row
+
+
 def test_preview_density_shows_bounded_output():
     from hermes_easy import layout
     s = ui.defaults()
@@ -267,6 +276,22 @@ def test_fenced_code_drops_fences_and_keeps_markdown_characters():
     assert layout.stream_code_line(cli, "Here:") is None
     assert layout.stream_code_line(cli, "```python") == ""
     row = layout.stream_code_line(cli, "x = a * b * c")
-    assert row is not None and "x = a * b * c" in row and row.startswith("  ")
+    assert row is not None
+    assert re.sub(r"\x1b\[[\d;]+m", "", row) == "  x = a * b * c"
     assert layout.stream_code_line(cli, "```") == ""
     assert layout.stream_code_line(cli, "after") is None
+
+
+def test_reasoning_stream_flushes_long_partial_thought_early(monkeypatch):
+    import cli as climod
+    from cli import HermesCLI
+    monkeypatch.setenv("HERMES_EASY_UI", "1")
+    rows = []
+    monkeypatch.setattr(climod, "_cprint", lambda text: rows.append(text or ""))
+    instance = HermesCLI.__new__(HermesCLI)
+    instance._modern_layout = True
+    instance._stream_box_opened = False
+    instance._reasoning_box_opened = False
+    instance._stream_reasoning_delta("Let me examine the problem and compare the available approaches carefully")
+    assert any("examine the problem" in row for row in rows)
+    assert instance._reasoning_buf

@@ -40599,6 +40599,30 @@
             "default": null,
             "title": "Tokens Per S"
           },
+          "decode_tokens_per_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Decode Tokens Per S"
+          },
+          "decode_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Decode Model"
+          },
           "last_turn_tokens": {
             "title": "Last Turn Tokens",
             "type": "integer"
@@ -41129,6 +41153,30 @@
             ],
             "default": null,
             "title": "Tokens Per S"
+          },
+          "decode_tokens_per_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Decode Tokens Per S"
+          },
+          "decode_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Decode Model"
           },
           "last_turn_tokens": {
             "anyOf": [

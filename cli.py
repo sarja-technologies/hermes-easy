@@ -1416,8 +1416,9 @@ class HermesCLI(EasyUIMixin, CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin
         if not self._claim_active_session("cli"):
             return
 
-        self._tui_print_startup()
         self._tui_init_run_state()
+        self._tui_install_signal_handlers()
+        self._tui_print_startup()
         kb = self._tui_build_key_bindings()
         layout, style = self._tui_build_layout(kb)
 
@@ -1785,9 +1786,9 @@ def main(
         sys.exit(0)
 
     atexit.register(_run_cleanup)  # interactive mode registers again in run() (idempotent)
-    _install_single_query_signal_handlers(cli)
 
     if query or image:
+        _install_single_query_signal_handlers(cli)
         _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json=output_format == "stream-json")
         return
     cli.run()

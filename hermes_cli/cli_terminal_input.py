@@ -232,6 +232,12 @@ def _hermes_call_output_screen_diff(
     common = (app, output, screen, current_pos, color_depth)
     tail = (is_done, full_screen, attrs_for_style_string, style_string_has_style, size)
     try:
+        if previous_screen is not None and not (is_done or full_screen) and os.environ.get("TMUX"):
+            import hermes_easy
+            if hermes_easy.active() and previous_width == size.columns:
+                from hermes_easy.composer import erase_shrinking_rows
+                if erase_shrinking_rows(output, screen, previous_screen, current_pos, style_string_has_style):
+                    last_style = None
         return orig_osd(*common, previous_screen, last_style, *tail, previous_width)
     except (AttributeError, TypeError):
         # Corrupt previous_screen / row cells after client reattach: previous_screen=None

@@ -300,6 +300,10 @@ def finish_text_response(
     codex_ack_continuations = 0
 
     final_response, _joined = _absorb_continuation_fragments(final_response, truncated_response_parts, messages)
+    # A reasoning-only truncation that recovered: forget the ladder.
+    if isinstance(getattr(agent, "_len_reasoning_streak", 0), int) and getattr(agent, "_len_reasoning_streak", 0):
+        from agent.turn_truncation import reset_reasoning_only_ladder
+        reset_reasoning_only_ladder(agent)
     if _joined:
         truncated_response_parts, length_continue_retries = [], 0
 

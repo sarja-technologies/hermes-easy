@@ -342,6 +342,8 @@ class SessionUsagePayload(Payload):
     compression_count: int | None = None
     avg_latency_s: float | None = None
     tokens_per_s: float | None = None
+    decode_tokens_per_s: float | None = None
+    decode_model: str | None = None
     last_turn_tokens: int | None = None
     rate_limit: dict[str, JsonValue] | None = None
     active_subagents: int | None = None

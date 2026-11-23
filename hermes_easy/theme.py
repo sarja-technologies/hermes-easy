@@ -20,7 +20,7 @@ SKIN_NAME = "hermes-easy"
 # ok/warn/error. No preset uses a hue in the violet range.
 PRESETS: dict[str, dict[str, dict[str, Any]]] = {
     "graphite": {
-        "dark": dict(accent="#8FA8C8", strong="#E6E6E6", text=None, dim="#8A8F98", faint="#3A3D42",
+        "dark": dict(accent="#79BFC0", strong="#E6E6E6", text=None, dim="#8A8F98", faint="#3A3D42",
                      surface="#232529", selection="#33373D"),
         "light": dict(accent="#3B5B85", strong="#1F1F1F", text=None, dim="#6A6F78", faint="#D5D7DB",
                       surface="#EEEFF1", selection="#DCE1E8")},
@@ -164,6 +164,8 @@ def restore_terminal_colors() -> None:
 def hex_fg(hex_color: str | None, bold: bool = False, italic: bool = False) -> str:
     """Raw SGR for a foreground colour (24-bit; the terminal or tmux downsamples if needed)."""
     codes = []
+    if os.environ.get("NO_COLOR") is not None:
+        hex_color = None
     if bold:
         codes.append("1")
     if italic:

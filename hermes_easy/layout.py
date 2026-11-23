@@ -1,9 +1,7 @@
 """hermes-easy transcript rows and composer chrome.
 
 Same contract as upstream's ``cli_modern_layout``: every row printed into scrollback is
-width-independent (a column-0 glyph, no boxes, no full-width rules) so a resize never
-re-wraps what is already on screen; width-dependent chrome lives only in prompt_toolkit's
-live region. Functions that return ``None`` print nothing (``_cprint`` skips ``None``).
+unboxed, so resizing the terminal leaves the native scrollback readable. Functions that return ``None`` print nothing (``_cprint`` skips ``None``).
 
 Block grammar::
 
@@ -25,7 +23,6 @@ import time
 from hermes_easy import settings as ui
 from hermes_easy.theme import RESET, hex_fg, palette
 
-_DIM, _BOLD = "\x1b[2m", "\x1b[1m"
 _RULE_WIDTH = 40  # fixed: a printed rule must never re-wrap on resize
 _PREVIEW_LINES = 4
 _FULL_CAP = 400
@@ -76,12 +73,21 @@ def short_cwd() -> str:
     return "~" + cwd[len(home):] if cwd == home or cwd.startswith(home + os.sep) else cwd
 
 
+def display_model(model: str) -> str:
+    """Make common local Qwen aliases legible; leave unknown provider names intact."""
+    match = re.match(r"^qwen[-_]?([0-9]+(?:\.[0-9]+)?)[-_]([0-9]+b)(.*)$", model or "", re.IGNORECASE)
+    if not match:
+        return model or "No model selected"
+    suffix = match.group(3).replace("-", " ").replace("_", " ").strip()
+    return f"Qwen {match.group(1)} {match.group(2).upper()}" + (f" {suffix}" if suffix else "")
+
+
 def identity_line(model: str) -> str:
     """The one line printed at launch: name, model, directory."""
     from hermes_easy import __version__
     _last_block["kind"] = "system"
-    return (f"{_c('accent', bold=True)}hermes-easy{RESET} {_c('dim')}{__version__}{RESET}  "
-            f"{_c('strong')}{model or 'no model'}{RESET} {_c('dim')}in {short_cwd()}{RESET}")
+    return (f"{_c('accent', bold=True)}Hermes Easy{RESET}  {_c('dim')}v{__version__}{RESET}\n"
+            f"{_c('dim')}{display_model(model)} · {short_cwd()}{RESET}")
 
 
 # ── user / assistant blocks ──────────────────────────────────────────────────────────────
@@ -92,7 +98,8 @@ def _glyph() -> str:
 
 def user_lines(cli, text: str) -> list[str]:
     """Rows for a submitted message, long ones collapsed like upstream's preview."""
-    lines = str(text or "").split("\n")
+    from hermes_easy.scrollback import strip_controls
+    lines = strip_controls(str(text or "")).split("\n")
     first = max(1, int(getattr(cli, "user_message_preview_first_lines", 2)))
     last = max(0, int(getattr(cli, "user_message_preview_last_lines", 2)))
     if len(lines) > first + last + 1:
@@ -100,7 +107,7 @@ def user_lines(cli, text: str) -> list[str]:
         lines = lines[:first] + [f"\x00… {hidden} more line{'s' if hidden != 1 else ''}"] + (
             lines[-last:] if last else [])
     style = ui.get("layout.messages")
-    strong, accent = _c("strong", bold=True), _c("accent", bold=True)
+    strong, accent = _c("strong"), _c("accent", bold=True)
     out = [""] if _gap("user") else []
     if style == "ruled":
         out.append(f"{_c('faint')}{'─' * _RULE_WIDTH}{RESET}")
@@ -122,6 +129,37 @@ def user_lines(cli, text: str) -> list[str]:
     return out
 
 
+def resumed_rows(cli):
+    """Replay the existing resume recap with the live conversation's role markers."""
+    from cli import CLI_CONFIG, _strip_reasoning_tags
+    from hermes_cli.cli_agent_setup_mixin import _collect_resume_entries
+    from tools.ansi_strip import sanitize_display_text
+
+    history = getattr(cli, "_resume_display_history", cli.conversation_history)
+    if not history or cli.resume_display == "minimal":
+        return
+    display = CLI_CONFIG.get("display", {})
+    entries, last_index, last_text = _collect_resume_entries(
+        history, display, lambda text: sanitize_display_text(_strip_reasoning_tags(text)))
+    skipped = max(0, len(entries) - max(0, int(display.get("resume_exchanges", 10))) * 2)
+    if skipped:
+        yield f"{_c('dim')}{skipped} earlier messages{RESET}"
+    for index, (role, text) in enumerate(entries[skipped:], skipped):
+        if role == "user":
+            yield from user_lines(cli, text)
+            continue
+        if _gap("answer"):
+            yield ""
+        if index == last_index and last_text:
+            text = last_text
+        first, *rest = text.splitlines() or [""]
+        if role == "event":
+            yield f"{_c('dim')}↳ {first}{RESET}"
+        else:
+            yield f"● {first}"
+        yield from ("  " + line for line in rest)
+
+
 def answer_open(timestamp: str = "") -> str | None:
     """Printed before the first answer line: a gap, plus a name in the labeled layout."""
     gap = _gap("answer")
@@ -140,18 +178,32 @@ def answer_text_ansi() -> str:
     return hex_fg(palette().get("text")) if palette().get("text") else ""
 
 
-_FENCE = re.compile(r"^\s{0,3}(```+|~~~+)\s*([\w+#.-]*)\s*$")
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*(.*)$")
 
 
 def stream_code_line(cli, line: str) -> str | None:
-    """Fenced code in a streamed answer: fence lines vanish ("" = print nothing), code lines
-    keep their markdown characters and are indented in the code colour; None = not code."""
-    if _FENCE.match(line):
-        cli._easy_in_fence = not getattr(cli, "_easy_in_fence", False)
-        return ""
-    if not getattr(cli, "_easy_in_fence", False):
+    """Render complete code rows without altering their content or indent."""
+    match = _FENCE.fullmatch(line)
+    opening = getattr(cli, "_easy_in_fence", False)
+    if not (match or opening):
         return None
-    return f"  {_c('strong')}{line}{RESET}" if line.strip() else " "
+    from hermes_easy.code import highlight, lexer_for
+
+    if not opening:
+        delimiter, info = match.groups()
+        if delimiter.startswith("`") and "`" in info:
+            return None
+        language = info.split(None, 1)[0] if info.strip() else ""
+        cli._easy_in_fence = delimiter
+        cli._easy_code_lexer = lexer_for(language)
+        return ""
+    if match and match[1][0] == opening[0] and len(match[1]) >= len(opening) and not match[2].strip():
+        cli._easy_in_fence = False
+        cli._easy_code_lexer = None
+        return ""
+    if not line:
+        return " "
+    return "  " + highlight(line, cli._easy_code_lexer)
 
 
 # ── reasoning ────────────────────────────────────────────────────────────────────────────
@@ -183,7 +235,7 @@ def thought_rows(seconds: float | None, text: str, full: bool) -> list[str]:
 
 # ── tool rows ────────────────────────────────────────────────────────────────────────────
 
-def _result_text(result) -> str:
+def _result_text(result, *, include_metadata: bool = True) -> str:
     """The human-readable part of a tool result (JSON results carry it under a few keys)."""
     if result is None:
         return ""
@@ -197,7 +249,7 @@ def _result_text(result) -> str:
             value = data.get(key)
             if isinstance(value, str) and value.strip():
                 return value
-        return json.dumps(data, indent=2, ensure_ascii=False)
+        return json.dumps(data, indent=2, ensure_ascii=False) if include_metadata else ""
     return text
 
 
@@ -210,11 +262,13 @@ def _remember(cli, name: str, label: str, result) -> None:
 def _gutter_lines(text: str, limit: int | None) -> list[str]:
     lines = text.rstrip("\n").split("\n") if text.strip() else []
     shown = lines if limit is None else lines[:limit]
-    faint, dim = _c("faint"), _c("dim")
-    out = [f"  {faint}│{RESET} {dim}{line}{RESET}" for line in shown]
+    from hermes_easy.composer import safe_display
+    dim = _c("dim")
+    out = [f"  {dim}{'↳' if i == 0 else ' '} {safe_display(line)}{RESET}"
+           for i, line in enumerate(shown)]
     hidden = len(lines) - len(shown)
     if hidden > 0:
-        out.append(f"  {faint}│{RESET} {dim}… {hidden} more line{'s' if hidden != 1 else ''} · ctrl+o shows all{RESET}")
+        out.append(f"    {dim}… {hidden} more lines · Ctrl+O for details{RESET}")
     return out
 
 
@@ -249,7 +303,7 @@ def tool_row(cli, function_name: str, args: dict | None, duration: float, result
     for index, (_emoji, verb, detail, suffix) in enumerate(rows):
         verb = (verb or function_name).strip()
         failed = suffix is not None and not neutral
-        mark = f"{_c('error', bold=True)}✗{RESET}" if failed else f"{_c('dim')}•{RESET}"
+        mark = f"{_c('error', bold=True)}✗{RESET}" if failed else f"{_c('accent')}•{RESET}"
         line = f"{mark} {_c('strong', bold=True)}{verb[:1].upper()}{verb[1:]}{RESET}"
         detail = short_paths(detail) if isinstance(detail, str) else detail
         if detail:
@@ -263,6 +317,13 @@ def tool_row(cli, function_name: str, args: dict | None, duration: float, result
     _remember(cli, function_name, label_for_expand, result)
     if density == "hidden":
         return None
+    if density == "compact" and function_name == "terminal":
+        output = _result_text(result, include_metadata=False).splitlines()
+        if output and output[0].strip():
+            from hermes_easy.composer import content_width, safe_display
+            width = content_width(cli._get_tui_terminal_width()) - 4
+            preview = cli._trim_status_bar_text(safe_display(output[0]), max(1, width))
+            out.append(f"  {_c('dim')}↳ {preview}{RESET}")
     if density in {"preview", "full"}:
         out += _gutter_lines(_result_text(result), _PREVIEW_LINES if density == "preview" else _FULL_CAP)
     return _gap("tool") + "\n".join(out)
@@ -300,6 +361,11 @@ _LEAD_JUNK = re.compile(r"^\s*(?:[^\w\s($]+|\([^)\w]*\)|\S*[　-ヿ̀-ͯ＀-￯]
 def clean_activity(text: str) -> str:
     """Drop a leading emoji / kaomoji token from upstream's spinner text."""
     text = (text or "").strip()
+    # The skin may receive a face from the runtime before it installs its own spinner.
+    if text.startswith("("):
+        face, close, rest = text.partition(")")
+        if close and rest.startswith(" ") and not any(ch.isalnum() for ch in face):
+            text = rest.lstrip()
     for _ in range(2):
         stripped = _LEAD_JUNK.sub("", text, count=1)
         if stripped == text:
@@ -331,95 +397,96 @@ def indicator_frame() -> str:
     return frames[int(time.monotonic() * fps) % len(frames)]
 
 
-def top_rule_fragments(cli) -> list:
-    """Composer's top edge: a faint rule; while busy it carries the activity and elapsed time."""
+def activity_fragments(cli) -> list:
+    """One transient conversation row, reserved for activity and actionable model state."""
     from hermes_cli.cli_modern_layout import _turn_elapsed, activity_text
-    width = max(10, cli._get_tui_terminal_width())
-    p = palette()
-    rule = f"fg:{p['faint']}"
+    model = getattr(cli, "model", "") or ""
+    name = display_model(model)
+    snapshot = getattr(cli, "_easy_model_status", ())
+    state = snapshot[2] if snapshot[:2] == (model, getattr(cli, "base_url", None)) else ""
     busy = getattr(cli, "_agent_running", False) or getattr(cli, "_command_running", False)
-    if not busy:
-        return [(rule, "─" * width)]
-    activity = clean_activity(activity_text(cli)) or "Working"
-    frags = [(f"fg:{p['accent']} bold", indicator_frame() + " "), (f"fg:{p['strong']}", activity)]
-    elapsed = _turn_elapsed(cli)
+    descriptions = {
+        "failed": f"{name} failed to load",
+        "disconnected": f"Cannot reach the model endpoint for {name}",
+        "missing": f"{name} is missing from the model endpoint",
+    }
+    if busy:
+        descriptions["loading"] = f"Loading {name}…"
+    activity = descriptions.get(state)
+    if not activity and busy:
+        activity = clean_activity(activity_text(cli)) or "Working…"
+    if not activity:
+        return []
+    problem = state in {"failed", "disconnected", "missing"}
+    mark = "!" if problem else indicator_frame()
+    rows = [(f"fg:{palette()['error' if problem else 'accent']}", mark + " "), ("", activity)]
+    elapsed = _turn_elapsed(cli) if busy else ""
     if elapsed:
-        frags.append((f"fg:{p['dim']}", f"  {elapsed}"))
-    used = sum(cli._status_bar_display_width(text) for _, text in frags)
-    if used + 2 > width:
-        plain = "".join(text for _, text in frags)
-        return [(f"fg:{p['strong']}", cli._trim_status_bar_text(plain, width))]
-    return frags + [("", " "), (rule, "─" * max(0, width - used - 1))]
+        rows.append(("class:easy-dim", "  " + elapsed))
+    return rows
 
 
-def _hints(cli) -> list[tuple[str, str]]:
-    from hermes_cli.cli_modern_layout import hint_pairs
-    pairs = hint_pairs(cli)
-    if not getattr(cli, "_agent_running", False) and pairs and cli.__dict__.get("_easy_tool_outputs"):
-        pairs = pairs + [("ctrl+o", "output")]
-    return pairs
+def error_line(message: str) -> str:
+    return f"{_c('error', bold=True)}!{RESET} {message}"
+
+
+def top_rule_fragments(cli) -> list:
+    from hermes_easy.composer import content_width
+    return [("class:input-rule", "─" * content_width(cli._get_tui_terminal_width()))]
 
 
 def status_line_fragments(cli) -> list:
-    """Footer under the composer for the ``status.line`` level (``full`` is upstream's)."""
+    """Show effective permissions and the active model, plus measured decode speed."""
+    from hermes_easy.composer import content_width
+    from tools.approval import is_approval_bypass_active_for_session
+    from tools.approval_context import _get_approval_mode
+
     level = ui.get("status.line")
+    if level == "off":
+        return []
     if level == "full":
         from hermes_cli.cli_modern_layout import _status_line_fragments
         return _status_line_fragments(cli)
-    if level == "off":
-        return []
-    p = palette()
-    dim, strong, warn = f"fg:{p['dim']}", f"fg:{p['strong']}", f"fg:{p['warn']} bold"
-    width = max(10, cli._get_tui_terminal_width())
-    snap = cli._get_status_bar_snapshot()
-    left: list = [("", "  "), (strong, snap.get("model_short") or getattr(cli, "model", "") or "no model")]
-
-    def add(style, text):
-        if text:
-            left.extend([(dim, " · "), (style, text)])
-
-    percent = snap.get("context_percent")
-    if percent is not None:
-        mark = "~" if snap.get("context_estimated") else ""
-        ctx_style = warn if percent >= 80 else dim
-        add(ctx_style, f"{mark}{percent}%" if level == "minimal" else f"{mark}{percent}% context")
-    if level == "standard":
-        if cli._is_session_yolo_active():
-            add(warn, "yolo")
-        for key, word in (("active_background_tasks", "background"),
-                          ("active_background_processes", "processes"),
-                          ("active_background_subagents", "subagents")):
-            if snap.get(key):
-                add(strong, f"{snap[key]} {word}")
-        goal = cli._status_bar_goal_segment(snap)
-        if goal:
-            add(strong, goal)
-        stash = cli._prompt_stash.indicator() if hasattr(cli, "_prompt_stash") else ""
-        add(strong, stash)
-        add(strong, cli._vim_mode_label())
-    right: list = []
-    if ui.get("status.key_hints") and width >= 76:
-        for key, text in _hints(cli):
-            if right:
-                right.append((dim, " · "))
-            right += [(strong, key), (dim, f" {text}")]
-    used_left = sum(cli._status_bar_display_width(t) for _, t in left)
-    used_right = sum(cli._status_bar_display_width(t) for _, t in right)
-    room = width - used_left - used_right - 6
-    if level == "standard" and room >= 12:
-        from hermes_cli.status_bar_git import current_git_branch
-        cwd = short_cwd()
-        branch = current_git_branch(os.getenv("TERMINAL_CWD") or os.getcwd())
-        label = f"{cwd} ({branch})" if branch else cwd
-        label = label if len(label) <= room else "…" + label[-(room - 1):]
-        add(dim, label)
-        used_left += 3 + cli._status_bar_display_width(label)
-    if right and used_left + used_right + 2 > width:
-        right, used_right = [], 0
-    pad = [("", " " * max(1, width - used_left - used_right - 1))] if right else []
-    frags = left + pad + right
-    total = sum(cli._status_bar_display_width(t) for _, t in frags)
-    if total > width:
-        plain = "".join(t for _, t in frags)
-        return [(dim, cli._trim_status_bar_text(plain, width))]
+    width = content_width(cli._get_tui_terminal_width())
+    if time.monotonic() < getattr(cli, "_easy_exit_hint_until", 0):
+        return [("class:easy-dim", "  Press Ctrl+C again to exit")]
+    mode = _get_approval_mode()
+    bypass = is_approval_bypass_active_for_session(getattr(cli, "session_id", None) or "default")
+    permission = "Approval bypass" if bypass else {
+        "smart": "Smart approvals", "manual": "Manual approvals",
+    }.get(mode, "Approvals enabled")
+    model_id = getattr(cli, "model", None)
+    model = display_model(model_id or "")
+    agent = getattr(cli, "agent", None)
+    rate = getattr(agent, "_easy_decode_rate", None)
+    measured = getattr(agent, "_easy_decode_model", None) == model_id
+    rate_label = f"{rate:.1f} tok/s" if measured and isinstance(rate, (int, float)) and 0 < rate < 1e9 else ""
+    blocks = [
+        ("class:easy-title" if not bypass else f"fg:{palette()['warn']}", "  " + permission),
+        ("class:easy-dim", model),
+    ]
+    if level == "standard" and rate_label and not getattr(cli, "_agent_running", False):
+        blocks.append(("class:easy-dim", rate_label))
+    if ui.get("status.key_hints") and level != "minimal":
+        from prompt_toolkit.application import get_app
+        if getattr(cli, "_agent_running", False):
+            blocks.append(("class:easy-dim", "Esc to interrupt"))
+        elif not get_app().current_buffer.text:
+            hint = ("Ctrl+O for tool details" if getattr(cli, "_easy_tool_outputs", None)
+                    else "Shift+Tab for approvals")
+            blocks.append(("class:easy-dim", hint))
+    frags = []
+    used = 0
+    for index, (style, value) in enumerate(blocks):
+        separator = " · " if frags else ""
+        budget = width - used - len(separator)
+        if index >= 2 and cli._status_bar_display_width(value) > budget:
+            continue
+        if budget <= 1:
+            break
+        if separator:
+            frags.append(("class:easy-dim", separator))
+        value = cli._trim_status_bar_text(value, budget)
+        frags.append((style, value))
+        used += len(separator) + cli._status_bar_display_width(value)
     return frags

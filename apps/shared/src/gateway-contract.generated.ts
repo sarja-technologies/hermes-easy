@@ -4916,6 +4916,8 @@ export interface SessionStats {
   compression_count: number
   avg_latency_s?: number | null
   tokens_per_s?: number | null
+  decode_tokens_per_s?: number | null
+  decode_model?: string | null
   last_turn_tokens: number
   rate_limit?: Record<string, unknown> | null
   active_subagents: number
@@ -6054,6 +6056,8 @@ export interface SessionUsagePayload {
   compression_count?: number | null
   avg_latency_s?: number | null
   tokens_per_s?: number | null
+  decode_tokens_per_s?: number | null
+  decode_model?: string | null
   last_turn_tokens?: number | null
   rate_limit?: Record<string, unknown> | null
   active_subagents?: number | null

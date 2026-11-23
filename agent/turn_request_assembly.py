@@ -188,6 +188,16 @@ def assemble_api_request(
         drop_nudge_marker=_CODEX_INCOMPLETE_NUDGE if _cross_protocol else None,
     )
 
+    # One-shot request-only nudge (turn_truncation reasoning-only ladder): never stored in history.
+    _nudge = getattr(agent, "_request_only_nudge", None)
+    if isinstance(_nudge, str) and _nudge:
+        agent._request_only_nudge = None
+        _last = api_messages[-1] if api_messages else None
+        if isinstance(_last, dict) and _last.get("role") == "user" and isinstance(_last.get("content"), str):
+            _last["content"] = f"{_last['content']}\n\n{_nudge}"
+        else:
+            api_messages.append({"role": "user", "content": _nudge})
+
     # Normalize whitespace and tool-call JSON for bit-perfect prefixes across turns
     # (KV-cache reuse on local servers, better cloud cache hits); API copy only.
     for am in api_messages:

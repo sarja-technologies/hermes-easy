@@ -286,9 +286,10 @@ class CLIStreamMixin:
             while "\n" in self._reasoning_buf:
                 line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
                 _cprint(reasoning_text_line(line))
-            if len(self._reasoning_buf) > 80:
-                import hermes_easy
-                cut = self._reasoning_buf.rfind(" ", 40) if hermes_easy.active() else -1
+            import hermes_easy
+            threshold = 48 if hermes_easy.active() else 80
+            if len(self._reasoning_buf) > threshold:
+                cut = self._reasoning_buf.rfind(" ", threshold // 2) if hermes_easy.active() else -1
                 if cut > 0:  # break at a word, never inside one
                     _cprint(reasoning_text_line(self._reasoning_buf[:cut]))
                     self._reasoning_buf = self._reasoning_buf[cut + 1:]
@@ -450,8 +451,12 @@ class CLIStreamMixin:
         """Print one response line with the skin's true-color text escape (if any)."""
         from cli import _RST, _STREAM_PAD, _cprint
         _tc = getattr(self, "_stream_text_ansi", "")
-        _cprint(
-            f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}")
+        pad = _STREAM_PAD
+        import hermes_easy
+        if hermes_easy.active():
+            pad = "● " if getattr(self, "_easy_answer_marker", False) else "  "
+            self._easy_answer_marker = False
+        _cprint(f"{pad}{_tc}{printed_line}{_RST}" if _tc else f"{pad}{printed_line}")
 
     def _flush_stream_table_buf(self) -> None:
         """Emit the held table block re-aligned as a whole. Cell-level markdown is stripped FIRST
@@ -507,6 +512,7 @@ class CLIStreamMixin:
             if hermes_easy.active():
                 from hermes_easy.layout import answer_text_ansi
                 self._stream_text_ansi = answer_text_ansi()
+                self._easy_answer_marker = True
             if getattr(self, "_modern_layout", False):
                 from hermes_cli.cli_modern_layout import answer_label
                 _cprint(answer_label(datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))
@@ -544,6 +550,11 @@ class CLIStreamMixin:
             if self.final_response_markdown == "strip":
                 line = _strip_markdown_syntax(line)
             self._emit_stream_line(line)
+
+        import hermes_easy
+        if hermes_easy.active() and getattr(self, "_app", None):
+            self._invalidate()
+            return
 
         # Partial lines are emitted ONLY at real newlines (no hard-wrapping — the terminal
         # soft-wraps, so highlight-copy yields the original text). For TTFT perception, mirror
@@ -610,6 +621,7 @@ class CLIStreamMixin:
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
         self._stream_buf = ""
+        self._easy_answer_marker = False
         self._stream_started = False
         self._stream_box_opened = False
         self._stream_text_ansi = ""
